@@ -19,6 +19,7 @@ class Compiler:
     def trace(frame: FrameType, event: str, arg: Optional[Any]):
         if Compiler.skip_frame is not None:
             if Compiler.skip_frame == frame:
+                print(Compiler.skip_frame, frame)
                 assert Compiler.skip_lineno is not None
                 frame.f_lineno = Compiler.skip_lineno
                 Compiler.skip_frame = None
@@ -36,17 +37,14 @@ class Compiler:
     @staticmethod
     @functools.cache
     def compile(src_ast: ast.AST, frame: FrameType):
-        print(src_ast)
-        print(ast.unparse(src_ast))
-        print(ast.dump(src_ast, indent=4))
-        print(src_ast.lineno, src_ast.end_lineno)
-        print(frame)
-        print(frame.f_trace_lines)
-        print(frame.f_trace)
+        if isinstance(src_ast, ast.If):
+            Compiler.compile_if(src_ast, frame)
+        else:
+            raise
         Compiler.skip(frame, src_ast.end_lineno + 1)
 
     @staticmethod
-    def compile_if_else(if_ast: ast.AST, frame: FrameType):
+    def compile_if(if_ast: ast.AST, frame: FrameType):
         ...
 
     @staticmethod
@@ -90,7 +88,7 @@ class Model:
         sys.settrace(Compiler.trace)
 
     def __exit__(self, exc_type, exc_value, exc_tb):
-        sys.settrace(Compiler.trace)
+        sys.settrace(None)
 
 
 class ProbabilisticVariable:
@@ -197,6 +195,7 @@ if __name__ == '__main__':
         else:
             print("SOMETHING HAPPENED")
             res = 1
+        ...
 
     # if Flip():
     #     ...

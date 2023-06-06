@@ -1,0 +1,3 @@
+[submodule "deps/pycfg"]
+	path = deps/pycfg
+	url = https://github.com/vrthra/pycfg
