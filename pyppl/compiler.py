@@ -3,40 +3,51 @@ import inspect
 import random
 import contextvars
 
-from typing import Any, Self, TypeAlias, Union
+from typing import Any, Optional, Self, TypeAlias, Union
 from collections import defaultdict
 
-_inference_technique = contextvars.ContextVar("inf_tech", default=None)
-_num_step_default = 1e4
+_inference_technique: contextvars.ContextVar[Optional['Technique']] = \
+    contextvars.ContextVar("inf_tech", default=None)
+
 
 class Technique:
     def __enter__(self):
         self._token = _inference_technique.set(self)
+
     def __exit__(self):
         _inference_technique.reset(self._token)
 
+
 class Sampling(Technique):
-    def __init__(self, num_samples=_num_step_default):
+    __default_num_samples = int(1e4)
+
+    def __init__(self, num_samples: Optional[int] = None):
+        if num_samples is None:
+            num_samples = Sampling.__default_num_samples
         assert num_samples > 0
         self.num_samples = num_samples
+
     def sample(self, func, *args, **kwargs):
         record = defaultdict(int)
-        for _ in range(num_samples):
+        for _ in range(self.num_samples):
             res = func(*args, **kwargs)
             if not isinstance(res, NotObservable):
                 record[res] += 1
-        return _normalize(record)
+        return self._normalize(record)
+
     def _normalize(self, record):
         for key in record.keys():
             record[key] /= self.num_samples
         return record
-        
+
+
 class ExactInference(Technique):
     def __init__(self):
         pass
+
     def exact_prob(self, contextual_execution):
         record = defaultdict(float)
-        
+
         """
         Requires code to be more complete but general thought process as follows
 
@@ -50,7 +61,7 @@ class ExactInference(Technique):
         Add values directly into record and return it
         """
         return None
-    
+
 
 class ProbVar:
     ...
@@ -155,19 +166,6 @@ class NotObservable:
 
 
 class SamplingTransform(ast.NodeTransformer):
-    # def visit_Call(self: Self, node: ast.Call) -> Union[ast.Call, ast.If]:
-    #     callee = _get_reference(node.func)
-    #     if callee is observe:
-    #         print(ast.dump(node, indent=2))
-    #         # Replace `observe(...)` with early exit logic.
-    #         observe_node = ast.If(node,
-    #                               [ast.Return(ast.Name(NotObservable.__name__,
-    #                                                    ctx=ast.Load))
-    #                                ],
-    #                               [])
-    #         return ast.copy_location(observe_node, node)
-    #     return node
-
     def visit_Expr(self: Self, stmt_node: ast.Expr) -> Union[ast.Expr, ast.If]:
         expr_node: ast.expr = stmt_node.value
         if isinstance(expr_node, ast.Call):
