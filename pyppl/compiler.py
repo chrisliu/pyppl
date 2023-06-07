@@ -219,7 +219,11 @@ if __name__ == '__main__':
         return a, b
 
     for _ in range(10):
-        print(test_flip())
+        sample = test_flip()
+        if sample is NotObservable:
+            print("Not observed")
+        else:
+            print(sample)
 
     # for _ in range(8):
     #     if Flip() != Flip():
