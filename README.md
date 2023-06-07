@@ -20,17 +20,17 @@ python -m pyppl
 # Project Objectives
 - [x] Base API and probabilistic primitives.
 - Sampling inference support.
- - [x] Compiler support for `observe`.
- - [ ] Probabilistic booleans.
- - Sampling techniques.
-  - [x] Rejection sampling.
-  - [ ] MCMC.
+  - [x] Compiler support for `observe`.
+  - [ ] Probabilistic booleans.
+  - [ ] Sampling techniques.
+    - [x] Rejection sampling.
+    - [ ] MCMC.
 - Exact inference support.
- - [ ] Compiler pass to construct [BDD](https://en.wikipedia.org/wiki/Binary_decision_diagram).
- - [ ] WMC of BDD.
+  - [ ] Compiler pass to construct [BDD](https://en.wikipedia.org/wiki/Binary_decision_diagram).
+  - [ ] WMC of BDD.
 - Hybrid inference.
- - [ ] Compiler support for hybrid inference techniques.
- - [ ] Context managers for inference techniques.
+  - [ ] Compiler support for hybrid inference techniques.
+  - [ ] Context managers for inference techniques.
 
 # Project History
 Our final project submission for 
