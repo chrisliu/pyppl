@@ -3,8 +3,12 @@ from pyppl.types import (
 )
 from pyppl.lang import (
     NotObservable,
-    observe
+    observe,
 )
 from pyppl.compiler import (
-    compile
+    compile,
+)
+from pyppl.inference import (
+    RejectionSampling,
+    ExactInference,
 )

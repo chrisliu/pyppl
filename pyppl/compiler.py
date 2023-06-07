@@ -2,14 +2,19 @@ import ast
 import inspect
 
 from pyppl.lang import observe, NotObservable
-from typing import Any, Dict, Optional, Self, Union
+from pyppl.types import (
+    ProbVar,
+    ProbBool,
+)
+from pyppl.inference import (
+    _cur_inference_technique,
+    SamplingInference,
+    ExactInference,
+)
+from typing import Any, Dict, Self, Union
 
 # Reference to built in `compile` function that'll be overwritten.
 __builtin_compile = compile
-
-
-class DataflowAnalyis:
-    ...
 
 
 def _get_reference(node: ast.expr, env: Dict[Any, Any]) -> Any:
@@ -33,7 +38,7 @@ def _get_reference(node: ast.expr, env: Dict[Any, Any]) -> Any:
 
 
 class SamplingTransform(ast.NodeTransformer):
-    def __init__(self, caller_env: Dict[Any, Any]) -> None:
+    def __init__(self: Self, caller_env: Dict[Any, Any]) -> None:
         self._caller_env = caller_env
 
     def visit_Expr(self: Self, stmt_node: ast.Expr) -> Union[ast.Expr, ast.If]:
@@ -60,7 +65,7 @@ class SamplingTransform(ast.NodeTransformer):
                 return ast.copy_location(if_observe_node, expr_node)
         return stmt_node
 
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+    def visit_FunctionDef(self: Self, node: ast.FunctionDef) -> ast.AST:
         def is_pyppl_decorator(node: ast.expr) -> bool:
             if not (isinstance(node, ast.Name) or
                     isinstance(node, ast.Attribute)):
@@ -82,7 +87,6 @@ def compile(func):
     indent = min(leading)
     src_lines = [line[indent:] for line in src_lines]
     func_src = '\n'.join(src_lines)
-    # print(func_src)
 
     cur_frame = inspect.currentframe()
     assert cur_frame is not None
@@ -92,19 +96,14 @@ def compile(func):
     # Insert correct logic for observe statements.
     mode = 'exec'
     func_ast = ast.parse(func_src, mode=mode)
-    # print(ast.dump(func_ast, indent=2))
     transformed_ast = SamplingTransform(caller_frame.f_locals).visit(func_ast)
     transformed_ast = ast.fix_missing_locations(transformed_ast)
-    # print(ast.dump(transformed_ast, indent=2))
-    # print(ast.unparse(transformed_ast))
 
     # Compile an executable version of the transformed function.
-    # TODO: Use inspect stack frame local scope.
     cc = __builtin_compile(transformed_ast, filename='<ast>', mode=mode)
     # Save function in local context.
     globs = caller_frame.f_globals
     locs = caller_frame.f_locals
-    # print(ast.unparse(transformed_ast))
     exec(cc, globs, locs)
     transformed_func = locs[func.__name__]
 
@@ -120,10 +119,17 @@ def compile(func):
     #     print(k, len(v.parents), len(v.children))
     # print(cfg)
 
-    # @functools.wraps
-    def contextual_execution(*args: Any, **kwargs: Any):
+    def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:
         # Sample logic goes here.
-        # TODO: only returns one sample right now, not a distribution.
-        return transformed_func(*args, **kwargs)
+        inference = _cur_inference_technique()
+        if inference is None:
+            raise RuntimeError("Not in an active inference context.")
+        elif isinstance(inference, SamplingInference):
+            return inference.sample(transformed_func, ProbBool,
+                                    *args, **kwargs)
+        elif isinstance(inference, ExactInference):
+            raise NotImplementedError("ExactInference is unsupported.")
+        else:
+            raise RuntimeError(f"Unsupported inference type {type(inference)}")
 
     return contextual_execution

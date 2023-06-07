@@ -1,23 +1,61 @@
 import random
-import numpy as np
+# import numpy as np
 import math
 
-from typing import Union, Self, TypeAlias
+from typing import Any, Dict, Union, Self, TypeAlias
 
 
 class ProbVar:
-    ...
+    @property
+    def distribution(self: Self) -> Dict[Any, float]:
+        raise NotImplementedError()
+
+    @distribution.setter
+    def distribution(self: Self, dist: Dict[Any, float]) -> None:
+        # TODO: Update distribution on assign.
+        raise NotImplementedError()
+
+    def _is_valid_distribution(self: Self, dist: Dict[Any, float]) -> bool:
+        return sum(dist.values()) == 1
+
+    def __repr__(self: Self) -> str:
+        dist_as_str = {str(k): str(v) for k, v in self.distribution.items()}
+        longest_key_len = max(len(k) for k in dist_as_str.keys())
+        dist_as_str = {k.ljust(longest_key_len): v
+                       for k, v in dist_as_str.items()}
+        return '{{\n{dist}\n}}'.format(
+            dist='\n'.join(f'  {k}: {v}' for k, v in dist_as_str.items()))
 
 
 class ProbBool(ProbVar):
-    def __bool__(self: Self):
+    def __init__(self: Self, prob_true: float = 0.5) -> None:
+        self._prob_true: float = prob_true
+
+    def __bool__(self: Self) -> bool:
         raise NotImplementedError()
+
+    @property
+    def distribution(self: Self) -> Dict[bool, float]:
+        return {
+            True: self._prob_true,
+            False: (1 - self._prob_true),
+        }
+
+    @distribution.setter
+    def distribution(self: Self, dist: Dict[bool, float]) -> None:
+        if not self._is_valid_distribution(dist):
+            raise ValueError(f"Bad distribution {dist}")
+        if True in dist:
+            self._prob_true = dist[True]
+        else:
+            raise ValueError(f"Inapprporiate boolean distribution {dist}")
+        
 
 
 class Flip(ProbBool):
-    def __init__(self: Self, prob_true: float = 0.5):
-        self._prob_true: float = prob_true
-        self._value: bool = random.random() < prob_true
+    def __init__(self: Self, prob_true: float = 0.5) -> None:
+        super().__init__(prob_true)
+        self._value: bool = random.random() < self._prob_true
 
     def __bool__(self: Self) -> bool:
         return self._value

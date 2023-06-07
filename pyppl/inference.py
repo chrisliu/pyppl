@@ -2,48 +2,74 @@ import contextvars
 import collections
 
 from pyppl.lang import NotObservable
-from typing import Optional
+from pyppl.types import ProbVar
+from types import TracebackType
+from typing import Any, Callable, Optional, Self, Type, Union
 
-_inference_technique: contextvars.ContextVar[Optional['Technique']] = \
+_inference_technique: contextvars.ContextVar[Optional['InferenceTechnique']] =\
     contextvars.ContextVar("inf_tech", default=None)
 
 
-class Technique:
-    def __enter__(self):
+def _cur_inference_technique() -> Optional['InferenceTechnique']:
+    return _inference_technique.get()
+
+
+class InferenceTechnique:
+    def __enter__(self: Self) -> None:
         self._token = _inference_technique.set(self)
 
-    def __exit__(self):
+    def __exit__(self: Self, exc_type: Union[Type[BaseException], None],
+                 exc_val: Union[BaseException, None],
+                 exc_tb: Union[TracebackType, None]) -> None:
         _inference_technique.reset(self._token)
 
 
-class Sampling(Technique):
+class SamplingInference(InferenceTechnique):
     __default_num_samples = int(1e4)
 
-    def __init__(self, num_samples: Optional[int] = None):
+    def __init__(self: Self, num_samples: Optional[int] = None) -> None:
         if num_samples is None:
-            num_samples = Sampling.__default_num_samples
-        assert num_samples > 0
-        self.num_samples = num_samples
+            num_samples = SamplingInference.__default_num_samples
+        if num_samples <= 0:
+            raise ValueError(
+                "Sampling inference must take at least one sample.")
+        self._num_samples = num_samples
 
-    def sample(self, func, *args, **kwargs):
-        record = collections.defaultdict(int)
-        for _ in range(self.num_samples):
-            res = func(*args, **kwargs)
-            if not isinstance(res, NotObservable):
-                record[res] += 1
-        return self._normalize(record)
-
-    def _normalize(self, record):
-        for key in record.keys():
-            record[key] /= self.num_samples
-        return record
+    # TODO: Only assumes one return type for now.
+    def sample(self: Self, func: Callable, return_types: Type[ProbVar],
+               *args: Any, **kwargs: Any,) -> ProbVar:
+        raise NotImplementedError()
 
 
-class ExactInference(Technique):
-    def __init__(self):
+class RejectionSampling(SamplingInference):
+    def __init__(self, num_samples: Optional[int] = None) -> None:
+        super().__init__(num_samples)
+
+    def sample(self: Self, func: Callable, return_types: Type[ProbVar],
+               *args: Any, **kwargs: Any,) -> ProbVar:
+        # Sample self._num_samples executions.
+        distribution = collections.defaultdict(int)
+        for _ in range(self._num_samples):
+            sample = func(*args, **kwargs)
+            if sample is not NotObservable:
+                distribution[sample] += 1
+
+        # Normalize.
+        actual_num_samples = sum(distribution.values())
+        distribution = {k: v / actual_num_samples
+                        for k, v in distribution.items()}
+
+        prob_var = return_types()
+        prob_var.distribution = distribution
+
+        return prob_var
+
+
+class ExactInference(InferenceTechnique):
+    def __init__(self: Self) -> None:
         pass
 
-    def exact_prob(self, contextual_execution):
+    def exact_prob(self: Self, contextual_execution):
         record = collections.defaultdict(float)
 
         """
