@@ -1,5 +1,6 @@
 import random
 import numpy as np
+import math
 
 from typing import Union, Self, TypeAlias
 
@@ -130,7 +131,7 @@ class Integer(Numeric):
         return float(self) / float(other)
 
     def __floordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
-        return floor(float(self) / float(other))
+        return math.floor(float(self) / float(other))
 
     def __mod__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, float):
@@ -208,7 +209,7 @@ class Real(Numeric):
         return float(self) / float(other)
 
     def __floordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
-        return floor(float(self) / float(other))
+        return math.floor(float(self) / float(other))
 
     def __radd__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
