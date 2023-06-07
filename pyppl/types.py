@@ -157,7 +157,7 @@ class Integer(Numeric):
         return float(other) / float(self)
 
     def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
-        return floor(float(other) / float(self))
+        return math.floor(float(other) / float(self))
 
     def __rmod__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, float):
@@ -230,4 +230,4 @@ class Real(Numeric):
         return float(other) / float(self)
 
     def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
-        return floor(float(other) / float(self))
+        return math.floor(float(other) / float(self))
