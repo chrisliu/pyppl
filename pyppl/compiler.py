@@ -1,9 +1,56 @@
 import ast
 import inspect
 import random
+import contextvars
 
 from typing import Any, Self, TypeAlias, Union
+from collections import defaultdict
 
+_inference_technique = contextvars.ContextVar("inf_tech", default=None)
+_num_step_default = 1e4
+
+class Technique:
+    def __enter__(self):
+        self._token = _inference_technique.set(self)
+    def __exit__(self):
+        _inference_technique.reset(self._token)
+
+class Sampling(Technique):
+    def __init__(self, num_samples=_num_step_default):
+        assert num_samples > 0
+        self.num_samples = num_samples
+    def sample(self, func, *args, **kwargs):
+        record = defaultdict(int)
+        for _ in range(num_samples):
+            res = func(*args, **kwargs)
+            if not isinstance(res, NotObservable):
+                record[res] += 1
+        return _normalize(record)
+    def _normalize(self, record):
+        for key in record.keys():
+            record[key] /= self.num_samples
+        return record
+        
+class ExactInference(Technique):
+    def __init__(self):
+        pass
+    def exact_prob(self, contextual_execution):
+        record = defaultdict(float)
+        
+        """
+        Requires code to be more complete but general thought process as follows
+
+        Construct execution graph to determine all paths
+        Take probability of all paths from flip/numeric, Ex.
+        if flip():
+            return a
+        else:
+            return b
+        constructs record probabiltiy of if path = probability of true flip, other false flip for else path
+        Add values directly into record and return it
+        """
+        return None
+    
 
 class ProbVar:
     ...
