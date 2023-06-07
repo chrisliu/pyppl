@@ -1,4 +1,6 @@
 import random
+import numpy as np
+import math
 
 from typing import Union, Self, TypeAlias
 
@@ -86,8 +88,146 @@ class Numeric(ProbVar):
 
 
 class Integer(Numeric):
-    ...
+    def __init__(self: Self, value: int):
+        self.val = value
+
+    def __int__(self: Self) -> int:
+        return int(self.val)
+
+    def __float__(self: Self) -> float:
+        return float(self.val)
+
+    def __eq__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val == other
+        return self.val == other.val
+
+    def __lt__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val < other
+        return self.val < other.val
+
+    def __le__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val <= other
+        return self.val <= other.val
+
+    def __add__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val + other
+        return self.val + other.val
+
+    def __sub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val - other
+        return self.val - other.val
+
+    def __mul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val * other
+        return self.val * other.val
+
+    def __truediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return float(self) / float(other)
+
+    def __floordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return math.floor(float(self) / float(other))
+
+    def __mod__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, float):
+            raise NotImplementedError()
+        return int(self) % int(other)
+
+    def __radd__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val + other
+        return self.val + other.val
+
+    def __rsub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val - other
+        return self.val - other.val
+
+    def __rmul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val * other
+        return self.val * other.val
+
+    def __rtruediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return float(other) / float(self)
+
+    def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return math.floor(float(other) / float(self))
+
+    def __rmod__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, float):
+            raise NotImplementedError()
+        return int(other) % int(self)
 
 
 class Real(Numeric):
-    ...
+    def __init__(self: Self, value: int):
+        self.val = value
+
+    def __int__(self: Self) -> int:
+        return int(self.val)
+
+    def __float__(self: Self) -> float:
+        return float(self.val)
+
+    def __eq__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val == other
+        return self.val == other.val
+
+    def __lt__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val < other
+        return self.val < other.val
+
+    def __le__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
+        if isinstance(other, PrimNumeric):
+            return self.val <= other
+        return self.val <= other.val
+
+    def __add__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val + other
+        return self.val + other.val
+
+    def __sub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val - other
+        return self.val - other.val
+
+    def __mul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val * other
+        return self.val * other.val
+
+    def __truediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return float(self) / float(other)
+
+    def __floordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return math.floor(float(self) / float(other))
+
+    def __radd__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val + other
+        return self.val + other.val
+
+    def __rsub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val - other
+        return self.val - other.val
+
+    def __rmul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        if isinstance(other, PrimNumeric):
+            return self.val * other
+        return self.val * other.val
+
+    def __rtruediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return float(other) / float(self)
+
+    def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
+        return math.floor(float(other) / float(self))
