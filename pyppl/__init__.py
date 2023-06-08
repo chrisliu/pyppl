@@ -1,5 +1,10 @@
 from pyppl.types import (
-    Flip
+    Flip,
+    Integer,
+    Real,
+    UniformDistribution,
+    GaussianDistribution,
+    DiscreteDistribution,
 )
 from pyppl.lang import (
     NotObservable,
