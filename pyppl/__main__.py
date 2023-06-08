@@ -1,7 +1,7 @@
 import pyppl
 
 if __name__ == '__main__':
-    @pyppl.compile
+    @pyppl.compile(return_types=pyppl.Flip)
     def test_flip():
         f = pyppl.Flip()
         pyppl.observe(f)
