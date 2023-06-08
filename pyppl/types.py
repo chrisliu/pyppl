@@ -19,7 +19,8 @@ class ProbVar:
         return sum(dist.values()) == 1
 
     def __repr__(self: Self) -> str:
-        dist_as_str = {str(k): str(v) for k, v in self.distribution.items()}
+        dist_as_str = {str(k): f'{v:0.3f}'
+                       for k, v in self.distribution.items()}
         longest_key_len = max(len(k) for k in dist_as_str.keys())
         dist_as_str = {k.ljust(longest_key_len): v
                        for k, v in dist_as_str.items()}
@@ -49,7 +50,6 @@ class ProbBool(ProbVar):
             self._prob_true = dist[True]
         else:
             raise ValueError(f"Inapprporiate boolean distribution {dist}")
-        
 
 
 class Flip(ProbBool):

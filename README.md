@@ -2,20 +2,47 @@
 A Python-embedded probabilistic programming language.
 
 # Getting Started
-Fetch this project with
+## Installation
+Install this package with `setup.py` by running
+```bash
+pip install .
+```
+in the root directory of the project (i.e., `cd path/to/pyppl`).
+
+## Development
+1. Fetch this project with
 ```bash 
 git clone --recurse-submodules git@github.com:chrisliu/pyppl.git
 ```
 
-Install the necessary dependencies with
+2. Install the necessary dependencies with
 ```bash
 pip install -r requirements.txt
 ```
 
-Run the main development file (`pyppl/__main__.py`) with
+3. Run the main development file (`pyppl/__main__.py`) with
 ```bash
 python -m pyppl
 ```
+
+## Presentation
+1. Install the necessary dependencies with
+```bash
+pip install -r media/presentation/requirements.txt
+```
+
+2. Launch the presentation file with Jupyter notebook
+```bash
+jupyter notebook media/presentation/CS\ 267A\ Invited\ Presentation.ipynb
+```
+
+Alternatively, the presentation could be located in `media/presentation` after
+launching it Jupyter notebook.
+```bash
+jupyter notebook
+```
+
+> Note: `nbdime` should help with committing Jupyter notebooks.
 
 # Project Objectives
 - [x] Base API and probabilistic primitives.
