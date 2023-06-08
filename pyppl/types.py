@@ -26,7 +26,9 @@ class ProbVar:
         raise NotImplementedError()
 
     def __repr__(self: Self) -> str:
-        return repr(self._distribution)
+        return '{classname}({distribution})'.format(
+            classname=type(self).__name__,
+            distribution=self._distribution)
 
 
 class ProbBool(ProbVar):
