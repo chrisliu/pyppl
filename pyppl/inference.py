@@ -2,7 +2,7 @@ import contextvars
 import collections
 
 from pyppl.lang import NotObservable
-from pyppl.types import ProbVar
+from pyppl.types import ProbVar, DiscreteDistribution
 from types import TracebackType
 from typing import Any, Callable, Optional, Self, Type, Union
 
@@ -60,7 +60,7 @@ class RejectionSampling(SamplingInference):
                         for k, v in distribution.items()}
 
         prob_var = return_types()
-        prob_var.distribution = distribution
+        prob_var.distribution = DiscreteDistribution(distribution)
 
         return prob_var
 

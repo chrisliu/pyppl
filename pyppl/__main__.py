@@ -5,7 +5,6 @@ if __name__ == '__main__':
     def test_flip():
         f = pyppl.Flip()
         pyppl.observe(f)
-        # if f and pyppl.Flip():
         if f and pyppl.Flip():
             a = True
         else:

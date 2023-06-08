@@ -2,65 +2,58 @@ import random
 import numpy as np
 import math
 
-from typing import Any, Dict, Union, Self, TypeAlias
+from typing import Any, Dict, Generic, Optional, Type, TypeVar, Union, Self, TypeAlias
 
 
 class ProbVar:
+    def __init__(self: Self) -> None:
+        self._distribution: Optional['Distribution'] = None
+
     @property
-    def distribution(self: Self) -> Dict[Any, float]:
-        raise NotImplementedError()
+    def distribution(self: Self) -> Optional['Distribution']:
+        return self._distribution
 
     @distribution.setter
-    def distribution(self: Self, dist: Dict[Any, float]) -> None:
-        # TODO: Update distribution on assign.
+    def distribution(self: Self, distribution: 'Distribution') -> None:
+        self._distribution_setter_impl(distribution)
+
+    def _distribution_setter_impl(self: Self, distribution: 'Distribution'
+                                  ) -> None:
+        self._distribution = distribution
+
+    def sample(self: Self) -> None:
         raise NotImplementedError()
 
-    def _is_valid_distribution(self: Self, dist: Dict[Any, float]) -> bool:
-        return sum(dist.values()) == 1
-
     def __repr__(self: Self) -> str:
-        dist_as_str = {str(k): f'{v:0.3f}'
-                       for k, v in self.distribution.items()}
-        longest_key_len = max(len(k) for k in dist_as_str.keys())
-        dist_as_str = {k.ljust(longest_key_len): v
-                       for k, v in dist_as_str.items()}
-        return '{{\n{dist}\n}}'.format(
-            dist='\n'.join(f'  {k}: {v}' for k, v in dist_as_str.items()))
+        return repr(self._distribution)
 
 
 class ProbBool(ProbVar):
     def __init__(self: Self, prob_true: float = 0.5) -> None:
         self._prob_true: float = prob_true
+        self.distribution = DiscreteDistribution({
+            True: prob_true,
+            False: (1 - prob_true),
+        })
+        self.sample()
 
-    def __bool__(self: Self) -> bool:
-        raise NotImplementedError()
-
-    @property
-    def distribution(self: Self) -> Dict[bool, float]:
-        return {
-            True: self._prob_true,
-            False: (1 - self._prob_true),
-        }
-
-    @distribution.setter
-    def distribution(self: Self, dist: Dict[bool, float]) -> None:
-        if not self._is_valid_distribution(dist):
-            raise ValueError(f"Bad distribution {dist}")
-        if True in dist:
-            self._prob_true = dist[True]
+    def _distribution_setter_impl(self: Self, dist: 'Distribution') -> None:
+        if not isinstance(dist, DiscreteDistribution):
+            raise ValueError(
+                f"Inappropriate boolean distribution {type(dist)}")
+        elif True in dist._distribution:
+            self._prob_true = dist._distribution[True]
+            super()._distribution_setter_impl(dist)
         else:
             raise ValueError(f"Inapprporiate boolean distribution {dist}")
 
-
-class Flip(ProbBool):
-    def __init__(self: Self, prob_true: float = 0.5) -> None:
-        super().__init__(prob_true)
+    def sample(self: Self) -> None:
         self._value: bool = random.random() < self._prob_true
 
     def __bool__(self: Self) -> bool:
         return self._value
 
-    def __eq__(self: Self, other: Union[ProbBool, bool]) -> bool:
+    def __eq__(self: Self, other: Union[Self, bool]) -> bool:
         if isinstance(other, ProbBool):
             return bool(self) == bool(other)
         elif isinstance(other, bool):
@@ -69,10 +62,19 @@ class Flip(ProbBool):
             mytype=type(self), othertype=type(other)))
 
 
+class Flip(ProbBool):
+    ...
+
+
 PrimNumeric: TypeAlias = Union[int, float]
 
 
 class Numeric(ProbVar):
+    def __init__(self, distribution: 'Distribution') -> None:
+        self._distribution = distribution
+        self._distribution._set_prob_var_type(type(self))
+        self._value = self.sample()
+
     def __int__(self: Self) -> int:
         raise NotImplementedError()
 
@@ -126,44 +128,59 @@ class Numeric(ProbVar):
 
 
 class Integer(Numeric):
-    def __init__(self: Self, value: int):
-        self.val = value
+    def __init__(self: Self, distribution: 'Distribution') -> None:
+        super().__init__(distribution)
+        self._value: int
+
+    def sample(self: Self) -> int:
+        if self._distribution is None:
+            raise AttributeError("Distribution is not set")
+        return int(self._distribution.sample())
+
+    @property
+    def distribution(self: Self) -> Dict[Any, float]:
+        raise NotImplementedError()
+
+    @distribution.setter
+    def distribution(self: Self, dist: Dict[Any, float]) -> None:
+        # TODO: Update distribution on assign.
+        raise NotImplementedError()
 
     def __int__(self: Self) -> int:
-        return int(self.val)
+        return int(self._value)
 
     def __float__(self: Self) -> float:
-        return float(self.val)
+        return float(self._value)
 
     def __eq__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val == other
-        return self.val == other.val
+            return self._value == other
+        return self._value == other._value
 
     def __lt__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val < other
-        return self.val < other.val
+            return self._value < other
+        return self._value < other._value
 
     def __le__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val <= other
-        return self.val <= other.val
+            return self._value <= other
+        return self._value <= other._value
 
     def __add__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val + other
-        return self.val + other.val
+            return self._value + other
+        return self._value + other._value
 
     def __sub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val - other
-        return self.val - other.val
+            return self._value - other
+        return self._value - other._value
 
     def __mul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val * other
-        return self.val * other.val
+            return self._value * other
+        return self._value * other._value
 
     def __truediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return float(self) / float(other)
@@ -178,18 +195,18 @@ class Integer(Numeric):
 
     def __radd__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val + other
-        return self.val + other.val
+            return self._value + other
+        return self._value + other._value
 
     def __rsub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val - other
-        return self.val - other.val
+            return self._value - other
+        return self._value - other._value
 
     def __rmul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val * other
-        return self.val * other.val
+            return self._value * other
+        return self._value * other._value
 
     def __rtruediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return float(other) / float(self)
@@ -204,44 +221,50 @@ class Integer(Numeric):
 
 
 class Real(Numeric):
-    def __init__(self: Self, value: int):
-        self.val = value
+    def __init__(self: Self, distribution: 'Distribution') -> None:
+        super().__init__(distribution)
+        self._value: float
+
+    def sample(self: Self) -> float:
+        if self._distribution is None:
+            raise AttributeError("Distribution is not set")
+        return float(self._distribution.sample())
 
     def __int__(self: Self) -> int:
-        return int(self.val)
+        return int(self._value)
 
     def __float__(self: Self) -> float:
-        return float(self.val)
+        return float(self._value)
 
     def __eq__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val == other
-        return self.val == other.val
+            return self._value == other
+        return self._value == other._value
 
     def __lt__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val < other
-        return self.val < other.val
+            return self._value < other
+        return self._value < other._value
 
     def __le__(self: Self, other: Union[Self, PrimNumeric]) -> bool:
         if isinstance(other, PrimNumeric):
-            return self.val <= other
-        return self.val <= other.val
+            return self._value <= other
+        return self._value <= other._value
 
     def __add__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val + other
-        return self.val + other.val
+            return self._value + other
+        return self._value + other._value
 
     def __sub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val - other
-        return self.val - other.val
+            return self._value - other
+        return self._value - other._value
 
     def __mul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val * other
-        return self.val * other.val
+            return self._value * other
+        return self._value * other._value
 
     def __truediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return float(self) / float(other)
@@ -251,18 +274,18 @@ class Real(Numeric):
 
     def __radd__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val + other
-        return self.val + other.val
+            return self._value + other
+        return self._value + other._value
 
     def __rsub__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val - other
-        return self.val - other.val
+            return self._value - other
+        return self._value - other._value
 
     def __rmul__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         if isinstance(other, PrimNumeric):
-            return self.val * other
-        return self.val * other.val
+            return self._value * other
+        return self._value * other._value
 
     def __rtruediv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return float(other) / float(self)
@@ -270,25 +293,90 @@ class Real(Numeric):
     def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return math.floor(float(other) / float(self))
 
-class UniformDistribution():
-    def __init__(self, num_type: Numeric, min: Numeric, max: Numeric):
-        if num_type.__name__ == "Real":
-            def sample_fn():
-                return (np.random.random() * (float(max) - float(min))) + float(min)
-            self.sample_fn = sample_fn
-        elif num_type.__name__ == "Integer":
-            def sample_fn():
-                return np.random.randint(int(min), int(max))
-            self.sample_fn = sample_fn
 
-    def sample(self):
-        return self.sample_fn()
+T = TypeVar('T')
 
-class GaussianDistribution():
-    def __init__(self, num_type: Numeric, mu: Real, sigma: Real):
-        def sample_fn():
-            return np.random.normal(mu, sigma)
-        self.sample_fn = sample_fn
 
-    def sample(self):
-        return self.sample_fn()
+class Distribution(Generic[T]):
+    def __init__(self):
+        self._prob_var_type: Optional[Type[ProbVar]] = None
+
+    def _set_prob_var_type(self: Self, prob_ty: Type[ProbVar]) -> None:
+        if not isinstance(prob_ty, type) or issubclass(prob_ty, ProbVar):
+            raise ValueError(
+                f"{prob_ty} is not a probabilistic variable type.")
+        self._prob_var_type = prob_ty
+
+    def sample(self: Self) -> T:
+        raise NotImplementedError
+
+    def __repr__(self: Self) -> str:
+        raise NotImplementedError()
+
+
+class UniformDistribution(Distribution):
+    def __init__(self: Self, a: Numeric, b: Numeric):
+        """A uniform distribution of range [a, b]."""
+        self._start = a
+        self._stop = b
+
+    def sample(self: Self) -> float:
+        if self._prob_var_type is not None and\
+                issubclass(self._prob_var_type, Integer):
+            return random.randint(int(self._start), int(self._stop))
+        else:
+            return random.uniform(float(self._start), float(self._stop))
+
+    def __repr__(self: Self) -> str:
+        return '{classname}(start={start}, stop={stop})'.format(
+            classname=type(self).__name__,
+            start=self._start,
+            stop=self._stop)
+
+
+class GaussianDistribution(Distribution):
+    def __init__(self: Self, mu: Numeric, sigma: Numeric):
+        """A gaussian distribution of range [a, b]."""
+        self._mu = mu
+        self._sigma = sigma
+
+    def sample(self: Self) -> float:
+        return random.gauss(float(self._mu), float(self._sigma))
+
+    def __repr__(self: Self) -> str:
+        return '{classname}(mu={mu}, sigma={sigma})'.format(
+            classname=type(self).__name__,
+            mu=self._mu,
+            sigma=self._sigma)
+
+
+class DiscreteDistribution(Distribution):
+    def __init__(self: Self, distribution: Dict[Any, float]) -> None:
+        if not DiscreteDistribution._is_valid_distribution(distribution):
+            raise ValueError(f"Bad distribution {distribution}")
+        self._distribution = distribution
+
+    @staticmethod
+    def _is_valid_distribution(distribution: Dict[Any, float]) -> bool:
+        return sum(distribution.values()) == 1
+
+    def sample(self: Self) -> Any:
+        assert len(self._distribution) != 0
+        rand_val = random.random()
+        postfix_sum = 0
+        for k, v in self._distribution.items():
+            postfix_sum += v
+            if rand_val < postfix_sum:
+                return k
+        print("Warning: discrete distribution sample shouldn't be out of bounds")
+        return k
+
+    def __repr__(self: Self) -> str:
+        dist_as_str = {str(k): f'{v:0.3f}'
+                       for k, v in self._distribution.items()}
+        longest_key_len = max(len(k) for k in dist_as_str.keys())
+        dist_as_str = {k.ljust(longest_key_len): v
+                       for k, v in dist_as_str.items()}
+        return '{classname}({{\n{dist}\n}})'.format(
+            classname=type(self).__name__,
+            dist='\n'.join(f'  {k}: {v}' for k, v in dist_as_str.items()))
