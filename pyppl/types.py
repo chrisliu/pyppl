@@ -1,5 +1,5 @@
 import random
-# import numpy as np
+import numpy as np
 import math
 
 from typing import Any, Dict, Union, Self, TypeAlias
@@ -269,3 +269,26 @@ class Real(Numeric):
 
     def __rfloordiv__(self: Self, other: Union[Self, PrimNumeric]) -> PrimNumeric:
         return math.floor(float(other) / float(self))
+
+class UniformDistribution():
+    def __init__(self, num_type: Numeric, min: Numeric, max: Numeric):
+        if num_type.__name__ == "Real":
+            def sample_fn():
+                return (np.random.random() * (float(max) - float(min))) + float(min)
+            self.sample_fn = sample_fn
+        elif num_type.__name__ == "Integer":
+            def sample_fn():
+                return np.random.randint(int(min), int(max))
+            self.sample_fn = sample_fn
+
+    def sample(self):
+        return self.sample_fn()
+
+class GaussianDistribution():
+    def __init__(self, num_type: Numeric, mu: Real, sigma: Real):
+        def sample_fn():
+            return np.random.normal(mu, sigma)
+        self.sample_fn = sample_fn
+
+    def sample(self):
+        return self.sample_fn()
