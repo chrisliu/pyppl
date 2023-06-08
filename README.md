@@ -31,7 +31,12 @@ python -m pyppl
 pip install -r media/presentation/requirements.txt
 ```
 
-2. Launch the presentation file with Jupyter notebook
+2. Configure `nbdime` for the current repo.
+```bash
+nbdime config-git --enable
+```
+
+3. Launch the presentation file with Jupyter notebook
 ```bash
 jupyter notebook media/presentation/CS\ 267A\ Invited\ Presentation.ipynb
 ```
