@@ -1,5 +1,7 @@
 import ast
 import inspect
+import pycfg
+import pprint
 
 from pyppl.lang import observe, NotObservable
 from pyppl.types import (
@@ -11,7 +13,7 @@ from pyppl.inference import (
     SamplingInference,
     ExactInference,
 )
-from typing import Any, Dict, Self, Type, Union
+from typing import Any, Dict, Iterator, List, Self, Tuple, Type, Union, overload
 
 # Reference to built in `compile` function that'll be overwritten.
 __builtin_compile = compile
@@ -82,6 +84,121 @@ class SamplingTransform(ast.NodeTransformer):
         return super().generic_visit(node)
 
 
+def get_cfg(src):
+    cfg = pycfg.PyCFG()
+    cfg.gen_cfg(src)
+    cache = pycfg.CFGNode.cache
+    g = {}
+    for k, v in cache.items():
+        j = v.to_json()
+        at = j['at']
+        parents_at = [cache[p].to_json()['at'] for p in j['parents']]
+        children_at = [cache[c].to_json()['at'] for c in j['children']]
+        if at not in g:
+            g[at] = {'parents': set(), 'children': set()}
+        # remove dummy nodes
+        ps = set([p for p in parents_at if p != at])
+        cs = set([c for c in children_at if c != at])
+        g[at]['parents'] |= ps
+        g[at]['children'] |= cs
+        if v.calls:
+            g[at]['calls'] = v.calls
+        g[at]['function'] = cfg.functions_node[v.lineno()]
+    return g
+
+
+class BasicBlock:
+    def __init__(self: Self, stmts: Union[pycfg.CFGNode, List[pycfg.CFGNode]]):
+        if isinstance(stmts, pycfg.CFGNode):
+            self._stmts = [stmts]
+        else:
+            self._stmts = stmts
+
+        self.parents: List[int] = list()
+        self.children: List[int] = list()
+
+    def __iter__(self: Self) -> Iterator[pycfg.CFGNode]:
+        return iter(self._stmts)
+
+    @overload
+    def __getitem__(self: Self, val: int) -> pycfg.CFGNode:
+        ...
+
+    @overload
+    def __getitem__(self: Self, val: slice) -> List[pycfg.CFGNode]:
+        ...
+
+    def __getitem__(self: Self, val: Union[int, slice]
+                    ) -> Union[pycfg.CFGNode, List[pycfg.CFGNode]]:
+        return self._stmts[val]
+
+    def __add__(self: Self, other: Self) -> Self:
+        if not isinstance(other, BasicBlock):
+            raise ValueError(f"Cannot add a BasicBlock with {type(other)}")
+        self.children = other.children
+        self._stmts += other._stmts
+        return self
+
+    def __repr__(self: Self) -> str:
+        return pprint.pformat({
+            'parents': self.parents,
+            'children': self.children,
+            'stmts': self._stmts,
+        })
+
+
+def bblockify(cfg: Dict[int, pycfg.CFGNode]) -> Dict[int, BasicBlock]:
+    """Converts a statement cfg into a basic block cfg.
+
+    :param cfg: A statement cfg (the return of pycfg.gen_cfg).
+    :return: A basic block cfg.
+    """
+
+    bb_cfg: Dict[int, BasicBlock] = dict()
+    node_remap: Dict[int, int] = dict()  # Map sCFG stmt node -> bbCFG cfg node
+
+    def get_bb_from_stmt(stmt_id: int) -> Tuple[int, BasicBlock]:
+        """Gets (and optionally allocates) the BB."""
+        stmt_node = cfg[stmt_id]
+        bb_id = node_remap.setdefault(stmt_id, stmt_id)
+        bb = bb_cfg.setdefault(bb_id, BasicBlock(stmt_node))
+        return bb_id, bb
+
+    # Merge statements into basic blocks.
+    for stmt_id, stmt_node in cfg.items():
+        parent_bb_id, parent_bb = get_bb_from_stmt(stmt_id)
+
+        # If the parent has one child and that child only has one parent,
+        # then it's safe to merge.
+        if len(stmt_node.children) == 1:
+            child_stmt_id = stmt_node.children[0].rid
+            child_stmt_node = cfg[child_stmt_id]
+            if len(child_stmt_node.parents) == 1:
+                child_bb_id, child_bb = get_bb_from_stmt(child_stmt_id)
+                merged_bb_node = parent_bb + child_bb
+                bb_cfg[parent_bb_id] = merged_bb_node
+                for node in child_bb:
+                    node_remap[node.rid] = parent_bb_id
+                del bb_cfg[child_bb_id]
+
+    # Update the CFG node parents and children.
+    for bb in bb_cfg.values():
+        # Update entry and exit points.
+        entry_stmt = bb[0]
+        bb.parents = [node_remap[parent_stmt.rid]
+                      for parent_stmt in entry_stmt.parents]
+        exit_stmt = bb[-1]
+        bb.children = [node_remap[child_stmt.rid]
+                       for child_stmt in exit_stmt.children]
+
+        # Remove all parents and children for basic block statements.
+        for stmt in bb:
+            stmt.parents = list()
+            stmt.children = list()
+
+    return bb_cfg
+
+
 def compile(*, return_types: Type[ProbVar]):
     def compile_impl(func):
         func_src = inspect.getsource(func)
@@ -112,16 +229,21 @@ def compile(*, return_types: Type[ProbVar]):
         transformed_func = locs[func.__name__]
 
         # Exact Inference stuff
+        cfg = pycfg.gen_cfg(func_src)
+        sources = [k for k, v in cfg.items() if len(v.parents) == 0]
+        if len(sources) > 1:
+            raise RuntimeError("PyPPL does not support nested functions")
 
-        # cfg = pycfg.gen_cfg(func_src)
-        # sources = [k for k, v in cfg.items() if len(v.parents) == 0]
-        # if len(sources) > 1:
-        #     raise RuntimeError("PyPPL does not support nested functions")
+        for k, v in cfg.items():
+            print(ast.dump(v.ast_node))
+            print(type(v))
+            print(k, len(v.parents), len(v.children))
+        from pprint import pprint
+        pprint(cfg)
 
-        # for k, v in cfg.items():
-        #     print(ast.dump(v.ast_node))
-        #     print(k, len(v.parents), len(v.children))
-        # print(cfg)
+        cfg = bblockify(cfg)
+        print("BB CFG")
+        pprint(cfg)
 
         def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:
             # Sample logic goes here.
