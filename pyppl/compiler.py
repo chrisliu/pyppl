@@ -3,6 +3,7 @@ import inspect
 import pycfg
 import pprint
 
+from collections import defaultdict
 from pyppl.lang import observe, NotObservable
 from pyppl.types import (
     ProbVar,
@@ -14,7 +15,7 @@ from pyppl.inference import (
     ExactInference,
     MCMC,
 )
-from typing import Any, Dict, Iterator, List, Self, Tuple, Type, Union, overload
+from typing import Any, Dict, Iterator, List, Literal, Optional, Self, Set, Tuple, Type, Union, overload
 
 # Reference to built in `compile` function that'll be overwritten.
 __builtin_compile = compile
@@ -83,29 +84,6 @@ class SamplingTransform(ast.NodeTransformer):
                                for decorator in node.decorator_list
                                if not is_pyppl_decorator(decorator)]
         return super().generic_visit(node)
-
-
-def get_cfg(src):
-    cfg = pycfg.PyCFG()
-    cfg.gen_cfg(src)
-    cache = pycfg.CFGNode.cache
-    g = {}
-    for k, v in cache.items():
-        j = v.to_json()
-        at = j['at']
-        parents_at = [cache[p].to_json()['at'] for p in j['parents']]
-        children_at = [cache[c].to_json()['at'] for c in j['children']]
-        if at not in g:
-            g[at] = {'parents': set(), 'children': set()}
-        # remove dummy nodes
-        ps = set([p for p in parents_at if p != at])
-        cs = set([c for c in children_at if c != at])
-        g[at]['parents'] |= ps
-        g[at]['children'] |= cs
-        if v.calls:
-            g[at]['calls'] = v.calls
-        g[at]['function'] = cfg.functions_node[v.lineno()]
-    return g
 
 
 class BasicBlock:
@@ -200,6 +178,247 @@ def bblockify(cfg: Dict[int, pycfg.CFGNode]) -> Dict[int, BasicBlock]:
     return bb_cfg
 
 
+class DominanceAnalysis:
+    def __init__(self: Self,
+                 cfg: Dict[int, BasicBlock],
+                 root_id: Optional[int] = None,
+                 key: Literal['parent', 'children'] = 'parent'
+                 ) -> None:
+        if key != 'parent' and key != 'children':
+            raise ValueError(f"Bad key {key}")
+        if root_id is None:
+            root_id = list(cfg.keys())[0]
+
+        self._cfg = cfg
+        self._root_id = root_id
+        self._key = key
+        self._all_bb_ids = set(self._cfg.keys())
+        self._rem_bb_ids = self._all_bb_ids - {self._root_id}
+
+        self.dominators: Dict[int, Set[int]] = dict()
+        self.idominators: Dict[int, Set[int]] = dict()
+        self.dominance_frontier: Dict[int, Set[int]] = dict()
+
+        self._compute_dominators()
+        self._compute_idominators()
+        self._compute_dominance_frontier()
+
+    def _compute_dominators(self: Self) -> None:
+        doms: Dict[int, Set[int]] = {
+            bb_id: self._all_bb_ids for bb_id in self._rem_bb_ids
+        }
+        doms[self._root_id] = {self._root_id}
+
+        has_changes = True
+        while has_changes:
+            has_changes = False
+            for bb_id in self._rem_bb_ids:
+                if self._key == 'parent':
+                    predecessors = self._cfg[bb_id].parents
+                elif self._key == 'children':
+                    predecessors = self._cfg[bb_id].children
+                else:
+                    raise ValueError(f"Unknown key {self._key}")
+                predecessor_doms = [doms[pred_bb_id]
+                                    for pred_bb_id in predecessors]
+
+                if len(predecessor_doms) != 0:
+                    updated_doms = set.intersection(*predecessor_doms)
+                else:
+                    updated_doms = set()
+                updated_doms |= {bb_id}  # Each node dominates itself.
+
+                if doms[bb_id] != updated_doms:
+                    doms[bb_id] = updated_doms
+                    has_changes = True
+
+        self.dominators = doms
+
+    def _compute_idominators(self: Self) -> None:
+        idoms: Dict[int, Set[int]] = {
+            bb_id: dom - {bb_id}
+            for bb_id, dom in self.dominators.items()
+        }
+
+        for bb_id in self._rem_bb_ids:
+            dominators = list(idoms[bb_id])
+            for dom_id in dominators:
+                # Ignore if it's been removed already.
+                if dom_id not in idoms[bb_id]:
+                    continue
+
+                for dom_dom_id in (idoms[bb_id] - {dom_id}):
+                    if dom_dom_id in idoms[dom_id]:
+                        idoms[bb_id] -= {dom_dom_id}
+
+        # Sanity check correctness.
+        for bb_id, idom in idoms.items():
+            if len(idom) > 1:
+                raise RuntimeError(
+                    "{bb} cannot have more than one immediate dominator {dom}"
+                    .format(bb=bb_id, dom=idom))
+
+        self.idominators = idoms
+
+    def _compute_dominance_frontier(self: Self) -> None:
+        # Compute dominance frontier.
+        dominance_frontier: Dict[int, Set[int]] = defaultdict(set)
+        for bb_id, bb in self._cfg.items():
+            if self._key == 'parent':
+                predecessors = bb.parents
+            elif self._key == 'children':
+                predecessors = bb.children
+            else:
+                raise ValueError(f"Unknown key {self._key}")
+
+            if len(predecessors) > 1:
+                for pred_bb_id in predecessors:
+                    runner_bb_id = pred_bb_id
+                    while runner_bb_id not in self.idominators[bb_id]:
+                        dominance_frontier[runner_bb_id] |= {bb_id}
+
+                        runner_idoms = self.idominators[runner_bb_id]
+                        if len(runner_idoms) == 0:
+                            break
+                        runner_bb_id = list(runner_idoms)[0]
+        dominance_frontier = {
+            bb_id: dominance_frontier[bb_id] for bb_id in self._all_bb_ids}
+
+        self.dominance_frontier = dominance_frontier
+
+    @property
+    def doms(self: Self) -> Dict[int, Set[int]]:
+        return self.dominators
+
+    @property
+    def idoms(self: Self) -> Dict[int, Set[int]]:
+        return self.idominators
+
+    @property
+    def df(self: Self) -> Dict[int, Set[int]]:
+        return self.dominance_frontier
+
+
+class SSATransformer:
+    def __init__(self: Self, cfg: Dict[int, BasicBlock]) -> None:
+        self._da = DominanceAnalysis(cfg)
+        print("Dominators")
+        pprint.pprint(self._da.doms)
+        print("IDominators")
+        pprint.pprint(self._da.idoms)
+        print("Dominance Frontier")
+        pprint.pprint(self._da.df)
+
+        self._cfg = cfg
+        self._assign: Dict[int, Set[str]] = defaultdict(set)
+
+        self._compute_assignments()
+        print("Assigns")
+        pprint.pprint(self._assign)
+        self._insert_phis()
+
+    def _compute_assignments(self: Self) -> None:
+        """Compute the variables assigned in each bb."""
+
+        for bb_id, bb in self._cfg.items():
+            for stmt in bb:
+                if stmt.ast_node is None:
+                    raise ValueError(f"Bad statement has no ast {stmt}")
+                ast_node = stmt.ast_node
+                visit = getattr(
+                    self, f'_assignment_visit_{type(ast_node).__name__}')
+                visit(ast_node, bb_id)
+
+        self._assign = {
+            bb_id: self._assign[bb_id] for bb_id in self._cfg.keys()}
+
+    def _assignment_visit_AnnAssign(self: Self,
+                                    annassign: ast.AnnAssign,
+                                    bb_id: int
+                                    ) -> None:
+        target = annassign.target
+        if not isinstance(target, ast.Name):
+            raise ValueError("Unrecognized target {target}".format(
+                target=type(target).__name__))
+        if target.id == 'enter':
+            # Enter a function, log the parameters as assigned.
+            annotation = annassign.annotation
+            if not isinstance(annotation, ast.Call):
+                raise ValueError(
+                    "Unrecognized annotation for enter {ty}".format(
+                        ty=type(annotation).__name__))
+
+            for arg in annotation.args:
+                if not isinstance(arg, ast.Name):
+                    raise ValueError("Unrecognized argument type {ty}".format(
+                        ty=type(arg).__name__))
+                self._assign[bb_id] |= {arg.id}
+
+            if len(annotation.keywords) > 0:
+                raise NotImplementedError("No support for keywords")
+        elif target.id == '_if':
+            pass
+        elif target.id == 'exit':
+            pass
+        else:
+            raise ValueError("Unrecognized target name {name}".format(
+                name=target.id))
+
+    def _assignment_visit_Assign(self: Self, assign: ast.Assign, bb_id: int
+                                 ) -> None:
+        for target in assign.targets:
+            if not isinstance(target, (ast.Name, ast.Tuple, ast.List)):
+                raise ValueError("Unrecognized assignment to {ty}".format(
+                    ty=type(target).__name__))
+
+            if isinstance(target, (ast.Tuple, ast.List)):
+                raise NotImplementedError("Unsupported unpacking assignment")
+            elif isinstance(target, ast.Name):
+                self._assign[bb_id] |= {target.id}
+            else:
+                raise NotImplementedError(
+                    "Unsupported assginment to {ty}".format(
+                        ty=type(target).__name__))
+
+    def _assignment_visit_Expr(self: Self, expr: ast.Expr, bb_id: int
+                               ) -> None:
+        pass
+
+    def _assignment_visit_Return(self: Self, ret: ast.Return, bb_id: int
+                                 ) -> None:
+        pass
+
+    def _insert_phis(self: Self) -> None:
+        # BBs that define each variable.
+        defsites: Dict[str, Set[int]] = defaultdict(set)
+        for bb_id, assignments in self._assign.items():
+            for var in assignments:
+                defsites[var] |= {bb_id}
+        defsites = dict(defsites)
+
+        phi_assign: Dict[int, Set[str]] = defaultdict(set)
+
+        for var in defsites.keys():
+            worklist = list(defsites[var])
+            while len(worklist) != 0:
+                bb_id = worklist.pop()
+                for df_bb_id in self._da.df[bb_id]:
+                    if var not in phi_assign[df_bb_id]:
+                        bb = self._cfg[df_bb_id]
+                        phi_stmt = ast.AnnAssign(
+                            target=ast.Name(id=var, ctx=ast.Store()),
+                            annotation=ast.Name(id='phi', ctx=ast.Load()),
+                            value=ast.Tuple(
+                                elts=[ast.Name(id=var, ctx=ast.Load())
+                                      for _ in range(len(bb.parents))],
+                                ctx=ast.Load()),
+                            simple=True)
+                        bb._stmts.insert(0, pycfg.CFGNode(ast=phi_stmt))
+
+                        phi_assign[df_bb_id] |= {var}
+                        worklist.append(df_bb_id)  # Propogate this assign
+
+
 def compile(*, return_types: Type[ProbVar]):
     def compile_impl(func):
         func_src = inspect.getsource(func)
@@ -235,16 +454,13 @@ def compile(*, return_types: Type[ProbVar]):
         if len(sources) > 1:
             raise RuntimeError("PyPPL does not support nested functions")
 
-        for k, v in cfg.items():
-            print(ast.dump(v.ast_node))
-            print(type(v))
-            print(k, len(v.parents), len(v.children))
         from pprint import pprint
         pprint(cfg)
 
         cfg = bblockify(cfg)
         print("BB CFG")
         pprint(cfg)
+        SSATransformer(cfg)
 
         def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:
             # Sample logic goes here.
