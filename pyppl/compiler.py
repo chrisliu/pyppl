@@ -1,9 +1,11 @@
 import ast
 import inspect
+from sys import hash_info
 import pycfg
 import pprint
 
 from collections import defaultdict
+from copy import deepcopy
 from pyppl.lang import observe, NotObservable
 from pyppl.types import (
     ProbVar,
@@ -179,6 +181,19 @@ def bblockify(cfg: Dict[int, pycfg.CFGNode]) -> Dict[int, BasicBlock]:
 
 
 class DominanceAnalysis:
+    class DominatorTree:
+        def __init__(self: Self,
+                     bb_id: int,
+                     children: Optional[List[Self]] = None) -> None:
+            self.bb_id = bb_id
+            self.children = [] if children is None else children
+
+        def __repr__(self: Self) -> str:
+            return "{cls}({id}, {children})".format(
+                cls=type(self).__name__,
+                id=self.bb_id,
+                children=self.children)
+
     def __init__(self: Self,
                  cfg: Dict[int, BasicBlock],
                  root_id: Optional[int] = None,
@@ -198,12 +213,14 @@ class DominanceAnalysis:
         self.dominators: Dict[int, Set[int]] = dict()
         self.idominators: Dict[int, Set[int]] = dict()
         self.dominance_frontier: Dict[int, Set[int]] = dict()
+        self.dominator_tree = DominanceAnalysis.DominatorTree(self._root_id)
 
-        self._compute_dominators()
-        self._compute_idominators()
-        self._compute_dominance_frontier()
+        self._construct_dominators()
+        self._construct_idominators()
+        self._construct_dominance_frontier()
+        self._construct_dominator_tree()
 
-    def _compute_dominators(self: Self) -> None:
+    def _construct_dominators(self: Self) -> None:
         doms: Dict[int, Set[int]] = {
             bb_id: self._all_bb_ids for bb_id in self._rem_bb_ids
         }
@@ -218,7 +235,7 @@ class DominanceAnalysis:
                 elif self._key == 'children':
                     predecessors = self._cfg[bb_id].children
                 else:
-                    raise ValueError(f"Unknown key {self._key}")
+                    raise ValueError(f"Unrecognized key {self._key}")
                 predecessor_doms = [doms[pred_bb_id]
                                     for pred_bb_id in predecessors]
 
@@ -234,7 +251,7 @@ class DominanceAnalysis:
 
         self.dominators = doms
 
-    def _compute_idominators(self: Self) -> None:
+    def _construct_idominators(self: Self) -> None:
         idoms: Dict[int, Set[int]] = {
             bb_id: dom - {bb_id}
             for bb_id, dom in self.dominators.items()
@@ -260,8 +277,8 @@ class DominanceAnalysis:
 
         self.idominators = idoms
 
-    def _compute_dominance_frontier(self: Self) -> None:
-        # Compute dominance frontier.
+    def _construct_dominance_frontier(self: Self) -> None:
+        # construct dominance frontier.
         dominance_frontier: Dict[int, Set[int]] = defaultdict(set)
         for bb_id, bb in self._cfg.items():
             if self._key == 'parent':
@@ -269,7 +286,7 @@ class DominanceAnalysis:
             elif self._key == 'children':
                 predecessors = bb.children
             else:
-                raise ValueError(f"Unknown key {self._key}")
+                raise ValueError(f"Unrecognized key {self._key}")
 
             if len(predecessors) > 1:
                 for pred_bb_id in predecessors:
@@ -286,6 +303,21 @@ class DominanceAnalysis:
 
         self.dominance_frontier = dominance_frontier
 
+    def _construct_dominator_tree(self: Self) -> None:
+        nodes: Dict[int, DominanceAnalysis.DominatorTree] = {
+            self._root_id: self.dominator_tree
+        }
+
+        def get_node(bb_id: int) -> DominanceAnalysis.DominatorTree:
+            return nodes.setdefault(bb_id,
+                                    DominanceAnalysis.DominatorTree(bb_id))
+
+        for bb_id, idoms in self.idominators.items():
+            sub_node = get_node(bb_id)
+            for idom_id in idoms:  # Should only be one
+                dom_node = get_node(idom_id)
+                dom_node.children.append(sub_node)
+
     @property
     def doms(self: Self) -> Dict[int, Set[int]]:
         return self.dominators
@@ -298,26 +330,23 @@ class DominanceAnalysis:
     def df(self: Self) -> Dict[int, Set[int]]:
         return self.dominance_frontier
 
+    @property
+    def dt(self: Self) -> DominatorTree:
+        return self.dominator_tree
+
 
 class SSATransformer:
     def __init__(self: Self, cfg: Dict[int, BasicBlock]) -> None:
         self._da = DominanceAnalysis(cfg)
-        print("Dominators")
-        pprint.pprint(self._da.doms)
-        print("IDominators")
-        pprint.pprint(self._da.idoms)
-        print("Dominance Frontier")
-        pprint.pprint(self._da.df)
 
         self._cfg = cfg
         self._assign: Dict[int, Set[str]] = defaultdict(set)
 
-        self._compute_assignments()
-        print("Assigns")
-        pprint.pprint(self._assign)
+        self._construct_assignments()
         self._insert_phis()
+        self._rename_variables()
 
-    def _compute_assignments(self: Self) -> None:
+    def _construct_assignments(self: Self) -> None:
         """Compute the variables assigned in each bb."""
 
         for bb_id, bb in self._cfg.items():
@@ -331,6 +360,29 @@ class SSATransformer:
 
         self._assign = {
             bb_id: self._assign[bb_id] for bb_id in self._cfg.keys()}
+
+        # Since we're dealing with Python, a variable is also defined in a BB
+        # if all dominated paths define it.
+        defsites: Dict[str, Set[int]] = defaultdict(set)
+        for bb_id, assignments in self._assign.items():
+            for var in assignments:
+                defsites[var] |= {bb_id}
+        defsites = dict(defsites)
+        phi_assign: Dict[int, Set[str]] = defaultdict(set)
+
+        # Dry run phi placement algorithm.
+        for var in defsites.keys():
+            worklist = list(defsites[var])
+            while len(worklist) != 0:
+                bb_id = worklist.pop()
+                for df_bb_id in self._da.df[bb_id]:
+                    if var not in phi_assign[df_bb_id]:
+                        bb = self._cfg[df_bb_id]
+                        phi_assign[df_bb_id] |= {var}
+                        if var in self._assign[df_bb_id]:
+                            worklist.append(df_bb_id)  # Propogate this assign
+        all_assign = {bb_id: self._assign[bb_id] | phi_assign[bb_id]
+                      for bb_id in self._cfg.keys()}
 
     def _assignment_visit_AnnAssign(self: Self,
                                     annassign: ast.AnnAssign,
@@ -395,6 +447,7 @@ class SSATransformer:
             for var in assignments:
                 defsites[var] |= {bb_id}
         defsites = dict(defsites)
+        all_assign = deepcopy(self._assign)
 
         phi_assign: Dict[int, Set[str]] = defaultdict(set)
 
@@ -416,7 +469,224 @@ class SSATransformer:
                         bb._stmts.insert(0, pycfg.CFGNode(ast=phi_stmt))
 
                         phi_assign[df_bb_id] |= {var}
-                        worklist.append(df_bb_id)  # Propogate this assign
+                        if var in self._assign[df_bb_id]:
+                            worklist.append(df_bb_id)  # Propogate this assign
+
+                        # Since we're dealing with Python, a variable is also
+                        # defined in a BB if all dominated paths define it.
+                        def update_assigns(
+                                node: DominanceAnalysis.DominatorTree) -> None:
+                            bb_id = node.bb_id
+                            if len(node.children) == 0:
+                                all_assign[bb_id] |= phi_assign[bb_id]
+                                return
+
+                            for sub in node.children:
+                                update_assigns(sub)
+
+                            child_assigns = set.intersection(
+                                *[all_assign[sub.bb_id]
+                                  for sub in node.children])
+                            new_assigns = child_assigns - self._assign[bb_id]
+                            if len(new_assigns) != 0:
+                                self._assign[bb_id] |= new_assigns
+                                worklist.append(bb_id)
+                        update_assigns(self._da.dt)
+
+        pprint.pprint(self._cfg)
+
+    def _rename_variables(self: Self) -> None:
+        count: Dict[str, int] = defaultdict(int)
+        stack: Dict[str, List[int]] = defaultdict(list)
+
+        def rename_bb(dt_node: DominanceAnalysis.DominatorTree) -> None:
+            bb = self._cfg[dt_node.bb_id]
+
+            bad_phis: Set[pycfg.CFGNode] = set()
+            assignments: List[str] = list()
+            for stmt in bb:
+                ast_node = stmt.ast_node
+                if ast_node is None:
+                    raise ValueError(f"Bad statement has no ast {stmt}")
+                visit = getattr(
+                    self, f'_rename_visit_{type(ast_node).__name__}')
+                phi, assigns = visit(ast_node, count, stack)
+                if phi is not None:
+                    bad_phis |= {phi}
+                assignments += assigns
+
+            print("BB", dt_node.bb_id)
+            print(bb)
+
+            for dt_child in dt_node.children:
+                rename_bb(dt_child)
+            for var in assignments:
+                stack[var].pop()
+
+        rename_bb(self._da.dt)
+
+    def _rename_visit_AnnAssign(self: Self,
+                                annassign: ast.AnnAssign,
+                                count: Dict[str, int],
+                                stack: Dict[str, List[int]]
+                                ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        target = annassign.target
+        if not isinstance(target, ast.Name):
+            raise ValueError("Unrecognized target {target}".format(
+                target=type(target).__name__))
+
+        annotation = annassign.annotation
+        assignments = list()
+        if target.id == 'enter':
+            # Enter a function, log the parameters as assigned.
+            if not isinstance(annotation, ast.Call):
+                raise ValueError(
+                    "Unrecognized annotation for enter {ty}".format(
+                        ty=type(annotation).__name__))
+
+            for arg in annotation.args:
+                if isinstance(arg, ast.Name):
+                    var = arg.id
+                    var_id = count[var]
+                    count[var] += 1
+                    stack[var].append(var_id)
+                    assignments.append(var)
+                    arg.id = self._rename(var, var_id)
+                else:
+                    raise ValueError("Unrecognized argument type {ty}".format(
+                        ty=type(arg).__name__))
+
+            if len(annotation.keywords) > 0:
+                raise NotImplementedError("No support for keywords")
+        elif target.id == '_if':
+            if isinstance(annotation, ast.BoolOp):
+                self._rename_visit_BoolOp(annotation, count, stack)
+            elif isinstance(annotation, ast.Call):
+                self._rename_visit_Call(annotation, count, stack)
+            elif isinstance(annotation, ast.Name):
+                self._rename_visit_Name(annotation, count, stack)
+            else:
+                raise ValueError("Unrecognized if condition {ty}".format(
+                    ty=type(annotation).__name__))
+        elif target.id == 'exit':
+            pass
+        else:
+            if not isinstance(annotation, ast.Name) or annotation.id != 'phi':
+                raise ValueError("Unrecognized target name {name}".format(
+                    name=target.id))
+            # Assign new.
+            var = target.id
+            var_id = count[var]
+            count[var] += 1
+            stack[var].append(var_id)
+            assignments.append(var)
+            target.id = self._rename(var, var_id)
+
+        return None, assignments
+
+    def _rename_visit_Assign(self: Self,
+                             assign: ast.Assign,
+                             count: Dict[str, int],
+                             stack: Dict[str, List[int]]
+                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        assignments = list()
+        for target in assign.targets:
+            if not isinstance(target, (ast.Name, ast.Tuple, ast.List)):
+                raise ValueError("Unrecognized assignment to {ty}".format(
+                    ty=type(target).__name__))
+
+            if isinstance(target, (ast.Tuple, ast.List)):
+                raise NotImplementedError("Unsupported unpacking assignment")
+            elif isinstance(target, ast.Name):
+                # Rename uses.
+                value = assign.value
+                if isinstance(value, ast.Name):
+                    self._rename_visit_Name(value, count, stack)
+                elif isinstance(value, ast.Call):
+                    self._rename_visit_Call(value, count, stack)
+                elif isinstance(value, ast.BoolOp):
+                    self._rename_visit_BoolOp(value, count, stack)
+
+                # Assign new.
+                var = target.id
+                var_id = count[var]
+                count[var] += 1
+                stack[var].append(var_id)
+                assignments.append(var)
+                target.id = self._rename(var, var_id)
+            else:
+                raise NotImplementedError(
+                    "Unsupported assginment to {ty}".format(
+                        ty=type(target).__name__))
+
+        return None, assignments
+
+    def _rename_visit_Expr(self: Self,
+                           expr: ast.Assign,
+                           count: Dict[str, int],
+                           stack: Dict[str, List[int]]
+                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        value = expr.value
+        if isinstance(value, ast.Call):
+            return self._rename_visit_Call(value, count, stack)
+        else:
+            raise ValueError("Unrecognized expr type {ty}".format(
+                ty=type(value).__name__))
+
+        return None, list()
+
+    def _rename_visit_Return(self: Self,
+                             assign: ast.Assign,
+                             count: Dict[str, int],
+                             stack: Dict[str, List[int]]
+                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        return None, list()
+
+    def _rename_visit_Call(self: Self,
+                           call: ast.Call,
+                           count: Dict[str, int],
+                           stack: Dict[str, List[int]]
+                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        for arg in call.args:
+            if isinstance(arg, ast.Call):
+                self._rename_visit_Call(arg, count, stack)
+            elif isinstance(arg, ast.Name):
+                self._rename_visit_Name(arg, count, stack)
+            else:
+                raise ValueError("Unsupported arg type {ty}".format(
+                    ty=type(arg).__name__))
+
+        return None, list()
+
+    def _rename_visit_BoolOp(self: Self,
+                             boolop: ast.BoolOp,
+                             count: Dict[str, int],
+                             stack: Dict[str, List[int]]
+                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        for value in boolop.values:
+            if isinstance(value, ast.Name):
+                self._rename_visit_Name(value, count, stack)
+            elif isinstance(value, ast.Call):
+                self._rename_visit_Call(value, count, stack)
+            else:
+                raise ValueError("Unsupported value type {ty}".format(
+                    ty=type(value).__name__))
+        return None, list()
+
+    def _rename_visit_Name(self: Self,
+                           name: ast.Name,
+                           count: Dict[str, int],
+                           stack: Dict[str, List[int]]
+                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+        var = name.id
+        if len(stack[var]) == 0:
+            raise UnboundLocalError(f"{var} not defined")
+        var_id = stack[var][-1]
+        name.id = self._rename(var, var_id)
+        return None, list()
+
+    def _rename(self: Self, var: str, id: int) -> str:
+        return f'*{id}*{var}*'
 
 
 def compile(*, return_types: Type[ProbVar]):
@@ -454,12 +724,7 @@ def compile(*, return_types: Type[ProbVar]):
         if len(sources) > 1:
             raise RuntimeError("PyPPL does not support nested functions")
 
-        from pprint import pprint
-        pprint(cfg)
-
         cfg = bblockify(cfg)
-        print("BB CFG")
-        pprint(cfg)
         SSATransformer(cfg)
 
         def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:

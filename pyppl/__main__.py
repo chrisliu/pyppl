@@ -8,13 +8,15 @@ if __name__ == '__main__':
         b = True
         if f and pyppl.Flip(prob2):
             if pyppl.Flip():
-                b = True
+                b = False
+                c = True
             else:
                 b = True
-
-            a = True
+                c = False
+            a = c
         else:
             a = False
+        a = b
         return a
 
     with pyppl.RejectionSampling():
