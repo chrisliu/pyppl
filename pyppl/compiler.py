@@ -502,7 +502,6 @@ class SSATransformer:
         def rename_bb(dt_node: DominanceAnalysis.DominatorTree) -> None:
             bb = self._cfg[dt_node.bb_id]
 
-            bad_phis: Set[pycfg.CFGNode] = set()
             assignments: List[str] = list()
             for stmt in bb:
                 ast_node = stmt.ast_node
@@ -510,14 +509,13 @@ class SSATransformer:
                     raise ValueError(f"Bad statement has no ast {stmt}")
                 visit = getattr(
                     self, f'_rename_visit_{type(ast_node).__name__}')
-                phi, assigns = visit(ast_node, count, stack)
-                if phi is not None:
-                    bad_phis |= {phi}
+                assigns = visit(ast_node, count, stack)
                 assignments += assigns
 
             print("BB", dt_node.bb_id)
             print(bb)
 
+            self._rename_child_phis(dt_node.bb_id, bb, count, stack)
             for dt_child in dt_node.children:
                 rename_bb(dt_child)
             for var in assignments:
@@ -525,11 +523,45 @@ class SSATransformer:
 
         rename_bb(self._da.dt)
 
+    def _rename_child_phis(self: Self,
+                           bb_id: int,
+                           bb: BasicBlock,
+                           count: Dict[str, int],
+                           stack: Dict[str, List[int]]
+                           ) -> None:
+        for child_id in bb.children:
+            child_bb = self._cfg[child_id]
+            phi_idx = child_bb.parents.index(bb_id)
+
+            bad_phis: List[pycfg.CFGNode] = list()
+            for stmt in child_bb:
+                # Is phi node.
+                stmt_ast = stmt.ast_node
+                if (isinstance(stmt_ast, ast.AnnAssign) and
+                    isinstance(stmt_ast.annotation, ast.Name) and
+                        stmt_ast.annotation.id == 'phi'):
+                    assert isinstance(stmt_ast.value, ast.Tuple)
+                    assert len(stmt_ast.value.elts) == len(child_bb.parents)
+                    name_ast = stmt_ast.value.elts[phi_idx]
+                    assert isinstance(name_ast, ast.Name)
+                    var = name_ast.id
+
+                    # If variable is not live, then we misspeculated
+                    # this phi node.
+                    if len(stack[var]) == 0:
+                        bad_phis.append(stmt)
+                    else:
+                        self._rename_visit_Name(name_ast, count, stack)
+
+            # Remove all bad phis.
+            child_bb._stmts = [
+                stmt for stmt in child_bb if stmt not in bad_phis]
+
     def _rename_visit_AnnAssign(self: Self,
                                 annassign: ast.AnnAssign,
                                 count: Dict[str, int],
                                 stack: Dict[str, List[int]]
-                                ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                                ) -> List[str]:
         target = annassign.target
         if not isinstance(target, ast.Name):
             raise ValueError("Unrecognized target {target}".format(
@@ -582,13 +614,13 @@ class SSATransformer:
             assignments.append(var)
             target.id = self._rename(var, var_id)
 
-        return None, assignments
+        return assignments
 
     def _rename_visit_Assign(self: Self,
                              assign: ast.Assign,
                              count: Dict[str, int],
                              stack: Dict[str, List[int]]
-                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                             ) -> List[str]:
         assignments = list()
         for target in assign.targets:
             if not isinstance(target, (ast.Name, ast.Tuple, ast.List)):
@@ -619,13 +651,13 @@ class SSATransformer:
                     "Unsupported assginment to {ty}".format(
                         ty=type(target).__name__))
 
-        return None, assignments
+        return assignments
 
     def _rename_visit_Expr(self: Self,
                            expr: ast.Assign,
                            count: Dict[str, int],
                            stack: Dict[str, List[int]]
-                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                           ) -> List[str]:
         value = expr.value
         if isinstance(value, ast.Call):
             return self._rename_visit_Call(value, count, stack)
@@ -633,20 +665,27 @@ class SSATransformer:
             raise ValueError("Unrecognized expr type {ty}".format(
                 ty=type(value).__name__))
 
-        return None, list()
-
     def _rename_visit_Return(self: Self,
-                             assign: ast.Assign,
+                             ret: ast.Return,
                              count: Dict[str, int],
                              stack: Dict[str, List[int]]
-                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
-        return None, list()
+                             ) -> List[str]:
+        value = ret.value
+        if isinstance(value, ast.Name):
+            return self._rename_visit_Name(value, count, stack)
+        elif isinstance(value, ast.Call):
+            return self._rename_visit_Call(value, count, stack)
+        elif isinstance(value, ast.BoolOp):
+            return self._rename_visit_BoolOp(value, count, stack)
+        else:
+            raise ValueError("Unrecognized return type {ty}".format(
+                ty=type(value).__name__))
 
     def _rename_visit_Call(self: Self,
                            call: ast.Call,
                            count: Dict[str, int],
                            stack: Dict[str, List[int]]
-                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                           ) -> List[str]:
         for arg in call.args:
             if isinstance(arg, ast.Call):
                 self._rename_visit_Call(arg, count, stack)
@@ -656,13 +695,13 @@ class SSATransformer:
                 raise ValueError("Unsupported arg type {ty}".format(
                     ty=type(arg).__name__))
 
-        return None, list()
+        return list()
 
     def _rename_visit_BoolOp(self: Self,
                              boolop: ast.BoolOp,
                              count: Dict[str, int],
                              stack: Dict[str, List[int]]
-                             ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                             ) -> List[str]:
         for value in boolop.values:
             if isinstance(value, ast.Name):
                 self._rename_visit_Name(value, count, stack)
@@ -671,19 +710,19 @@ class SSATransformer:
             else:
                 raise ValueError("Unsupported value type {ty}".format(
                     ty=type(value).__name__))
-        return None, list()
+        return list()
 
     def _rename_visit_Name(self: Self,
                            name: ast.Name,
                            count: Dict[str, int],
                            stack: Dict[str, List[int]]
-                           ) -> Tuple[Optional[pycfg.PyCFG], List[str]]:
+                           ) -> List[str]:
         var = name.id
         if len(stack[var]) == 0:
             raise UnboundLocalError(f"{var} not defined")
         var_id = stack[var][-1]
         name.id = self._rename(var, var_id)
-        return None, list()
+        return list()
 
     def _rename(self: Self, var: str, id: int) -> str:
         return f'*{id}*{var}*'
