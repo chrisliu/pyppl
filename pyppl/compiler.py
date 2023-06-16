@@ -12,6 +12,7 @@ from pyppl.inference import (
     _cur_inference_technique,
     SamplingInference,
     ExactInference,
+    MCMC,
 )
 from typing import Any, Dict, Iterator, List, Self, Tuple, Type, Union, overload
 
@@ -251,6 +252,9 @@ def compile(*, return_types: Type[ProbVar]):
             if inference is None:
                 raise RuntimeError("Not in an active inference context.")
             elif isinstance(inference, SamplingInference):
+                return inference.sample(transformed_func, return_types,
+                                        *args, **kwargs)
+            elif isinstance(inference, MCMC):
                 return inference.sample(transformed_func, return_types,
                                         *args, **kwargs)
             elif isinstance(inference, ExactInference):

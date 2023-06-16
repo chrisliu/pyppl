@@ -6,9 +6,10 @@ from pyppl.types import ProbVar, DiscreteDistribution
 from types import TracebackType
 from typing import Any, Callable, Optional, Self, Type, Union
 
+import numpy as np
+
 _inference_technique: contextvars.ContextVar[Optional['InferenceTechnique']] =\
     contextvars.ContextVar("inf_tech", default=None)
-
 
 def _cur_inference_technique() -> Optional['InferenceTechnique']:
     return _inference_technique.get()
@@ -22,7 +23,6 @@ class InferenceTechnique:
                  exc_val: Union[BaseException, None],
                  exc_tb: Union[TracebackType, None]) -> None:
         _inference_technique.reset(self._token)
-
 
 class SamplingInference(InferenceTechnique):
     __default_num_samples = int(1e4)
@@ -58,7 +58,35 @@ class RejectionSampling(SamplingInference):
         actual_num_samples = sum(distribution.values())
         distribution = {k: v / actual_num_samples
                         for k, v in distribution.items()}
+        prob_var = return_types()
+        prob_var.distribution = DiscreteDistribution(distribution)
 
+        return prob_var
+
+class MCMC(SamplingInference):
+    def __init__(self, num_samples: Optional[int] = None) -> None:
+        super().__init__(num_samples)
+        self.mu = 0
+        self.sigma = 1
+        self.target_dist = lambda x: np.exp(-0.5 * ((x - self.mu) / self.sigma) ** 2) / (np.sqrt(2 * np.pi) * self.sigma)
+        self.state = 0
+
+    def sample(self: Self, func: Callable, return_types: Type[ProbVar],
+                *args: Any, **kwargs: Any,) -> ProbVar:
+        distribution = collections.defaultdict(int)
+
+        for _ in range(self._num_samples):
+            proposal = func(*args, **kwargs)
+
+            if proposal is not NotObservable:
+                acceptance = min(1, self.target_dist(proposal) / self.target_dist(self.state))
+                if np.random.uniform(0, 1) < acceptance:
+                    self.state = proposal
+                distribution[self.state] += 1
+
+        actual_num_samples = sum(distribution.values())
+        distribution = {k: v / actual_num_samples
+                        for k, v in distribution.items()}
         prob_var = return_types()
         prob_var.distribution = DiscreteDistribution(distribution)
 
@@ -68,20 +96,3 @@ class RejectionSampling(SamplingInference):
 class ExactInference(InferenceTechnique):
     def __init__(self: Self) -> None:
         pass
-
-    def exact_prob(self: Self, contextual_execution):
-        record = collections.defaultdict(float)
-
-        """
-        Requires code to be more complete but general thought process as follows
-
-        Construct execution graph to determine all paths
-        Take probability of all paths from flip/numeric, Ex.
-        if flip():
-            return a
-        else:
-            return b
-        constructs record probabiltiy of if path = probability of true flip, other false flip for else path
-        Add values directly into record and return it
-        """
-        return None
