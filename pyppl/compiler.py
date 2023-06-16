@@ -10,6 +10,7 @@ from pyppl.inference import (
     _cur_inference_technique,
     SamplingInference,
     ExactInference,
+    MCMC,
 )
 from typing import Any, Dict, Self, Type, Union
 
@@ -112,7 +113,6 @@ def compile(*, return_types: Type[ProbVar]):
         transformed_func = locs[func.__name__]
 
         # Exact Inference stuff
-
         # cfg = pycfg.gen_cfg(func_src)
         # sources = [k for k, v in cfg.items() if len(v.parents) == 0]
         # if len(sources) > 1:
@@ -129,6 +129,9 @@ def compile(*, return_types: Type[ProbVar]):
             if inference is None:
                 raise RuntimeError("Not in an active inference context.")
             elif isinstance(inference, SamplingInference):
+                return inference.sample(transformed_func, return_types,
+                                        *args, **kwargs)
+            elif isinstance(inference, MCMC):
                 return inference.sample(transformed_func, return_types,
                                         *args, **kwargs)
             elif isinstance(inference, ExactInference):

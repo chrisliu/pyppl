@@ -17,6 +17,21 @@ if __name__ == '__main__':
     print(success)
 
     @pyppl.compile(return_types=pyppl.Flip)
+    def test_flip():
+        f = pyppl.Flip()
+        pyppl.observe(f)
+        if f and pyppl.Flip():
+            a = True
+        else:
+            a = False
+        return a
+
+    with pyppl.MCMC():
+        success = test_flip()
+
+    print(success)
+
+    @pyppl.compile(return_types=pyppl.Flip)
     def up_to_n_heads_in_a_row(n):
         heads = True
         for _ in range(int(pyppl.Integer(pyppl.UniformDistribution(0, n)))):
@@ -41,3 +56,23 @@ if __name__ == '__main__':
         distribution = roll_n_dice(2)
 
     print(distribution)
+
+    # For demonstration purposes BELOW
+    @pyppl.compile(return_types=pyppl.Flip)
+    def test_flip():
+        f = pyppl.Flip()
+        pyppl.observe(f)
+        if f and pyppl.Flip():
+            a = True
+        else:
+            a = False
+
+        with pyppl.ExactInference():
+            b = pyppl.Flip(1e-5)
+
+        return a & b
+
+    with pyppl.MCMC():
+        success = test_flip()
+
+    print(success)

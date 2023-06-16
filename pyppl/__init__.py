@@ -16,4 +16,5 @@ from pyppl.compiler import (
 from pyppl.inference import (
     RejectionSampling,
     ExactInference,
+    MCMC,
 )
