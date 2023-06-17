@@ -796,9 +796,11 @@ class SSATransformer:
         print("RETURN")
         if isinstance(value, ast.Name):
             var = value.id
-            ref = self._var_to_bdd_ref[var]
-            bdd_var = self._bdd_vars[ref]
-            pprint.pprint(list(bdd_var.satisfy_all()))
+            # Only if it's possible to return true.
+            if var in self._var_to_bdd_ref:
+                ref = self._var_to_bdd_ref[var]
+                bdd_var = self._bdd_vars[ref]
+                pprint.pprint(list(bdd_var.satisfy_all()))
 
         return list()
 
@@ -823,8 +825,20 @@ class SSATransformer:
                               count: Dict[str, int],
                               stack: Dict[str, List[int]]
                               ) -> List[str]:
-        print(ast.dump(unaryop))
-        raise
+        op = unaryop.op
+        if isinstance(op, ast.Not):
+            operand = unaryop.operand
+            if isinstance(operand, ast.Name):
+                self._rename_visit_Name(operand, count, stack)
+            elif isinstance(operand, ast.Call):
+                self._rename_visit_Call(operand, count, stack)
+            elif isinstance(operand, ast.BoolOp):
+                self._rename_visit_BoolOp(operand, count, stack)
+            elif isinstance(operand, ast.UnaryOp):
+                self._rename_visit_UnaryOp(operand, count, stack)
+        else:
+            raise ValueError("Unsupported unary op {op}".format(
+                op=type(op).__name__))
         return list()
 
     def _rename_visit_BoolOp(self: Self,

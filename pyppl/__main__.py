@@ -4,16 +4,21 @@ if __name__ == '__main__':
     @pyppl.compile(return_types=pyppl.Flip)
     def test_flip(prob1, prob2):
         f = pyppl.Flip(prob1)
-        b = True
+        a = False
         if f:
-            if pyppl.Flip():
-                b = True
-            else:
-                b = False
             a = False
-        else:
-            a = True
-        a = b
+
+        # f = pyppl.Flip(prob1)
+        # b = True
+        # if not f:
+        #     if pyppl.Flip():
+        #         b = True
+        #     else:
+        #         b = False
+        #     a = False
+        # else:
+        #     a = True
+        # a = b
 
         # pyppl.observe(bool(f))
         # b = True

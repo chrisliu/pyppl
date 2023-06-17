@@ -47,6 +47,9 @@ class ProbBool(ProbVar):
         elif True in dist._distribution:
             self._prob_true = dist._distribution[True]
             super()._distribution_setter_impl(dist)
+        elif False in dist._distribution:
+            self._prob_true = 1 - dist._distribution[False]
+            super()._distribution_setter_impl(dist)
         else:
             raise ValueError(f"Inapprporiate boolean distribution {dist}")
 
