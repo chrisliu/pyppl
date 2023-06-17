@@ -1,4 +1,5 @@
 numpy==1.24.3
 astunparse==1.6.3
 pygraphviz==1.11
+pyeda==0.28.0
 deps/pycfg

@@ -3,11 +3,13 @@ import inspect
 from sys import hash_info
 import pycfg
 import pprint
+import pyeda.inter as bdd
 
 from collections import defaultdict
 from copy import deepcopy
 from pyppl.lang import observe, NotObservable
 from pyppl.types import (
+    Flip,
     ProbVar,
     ProbBool,
 )
@@ -336,8 +338,9 @@ class DominanceAnalysis:
 
 
 class SSATransformer:
-    def __init__(self: Self, cfg: Dict[int, BasicBlock]) -> None:
+    def __init__(self: Self, cfg: Dict[int, BasicBlock], locals) -> None:
         self._da = DominanceAnalysis(cfg)
+        self._locals = locals
 
         self._cfg = cfg
         self._assign: Dict[int, Set[str]] = defaultdict(set)
@@ -360,29 +363,6 @@ class SSATransformer:
 
         self._assign = {
             bb_id: self._assign[bb_id] for bb_id in self._cfg.keys()}
-
-        # Since we're dealing with Python, a variable is also defined in a BB
-        # if all dominated paths define it.
-        defsites: Dict[str, Set[int]] = defaultdict(set)
-        for bb_id, assignments in self._assign.items():
-            for var in assignments:
-                defsites[var] |= {bb_id}
-        defsites = dict(defsites)
-        phi_assign: Dict[int, Set[str]] = defaultdict(set)
-
-        # Dry run phi placement algorithm.
-        for var in defsites.keys():
-            worklist = list(defsites[var])
-            while len(worklist) != 0:
-                bb_id = worklist.pop()
-                for df_bb_id in self._da.df[bb_id]:
-                    if var not in phi_assign[df_bb_id]:
-                        bb = self._cfg[df_bb_id]
-                        phi_assign[df_bb_id] |= {var}
-                        if var in self._assign[df_bb_id]:
-                            worklist.append(df_bb_id)  # Propogate this assign
-        all_assign = {bb_id: self._assign[bb_id] | phi_assign[bb_id]
-                      for bb_id in self._cfg.keys()}
 
     def _assignment_visit_AnnAssign(self: Self,
                                     annassign: ast.AnnAssign,
@@ -499,8 +479,20 @@ class SSATransformer:
         count: Dict[str, int] = defaultdict(int)
         stack: Dict[str, List[int]] = defaultdict(list)
 
+        self._branch_idom_bdd: Dict[int, str] = dict()
+        self._branch_bdd: Dict[int, str] = dict()
+        self._num_bdd_vars = 0
+        self._bdd_vars: Dict[str, bdd.BinaryDecisionDiagram] = dict()
+        self._var_to_constant: Dict[str, Any] = dict()
+        self._var_to_bdd_ref: Dict[str, str] = dict()
+        self._func_params: Set[str] = set()
+        self._rename_table: Dict[str, str] = dict()
+        self._bb_stack: List[int] = list()
+
         def rename_bb(dt_node: DominanceAnalysis.DominatorTree) -> None:
             bb = self._cfg[dt_node.bb_id]
+
+            self._bb_stack.append(dt_node.bb_id)
 
             assignments: List[str] = list()
             for stmt in bb:
@@ -520,8 +512,10 @@ class SSATransformer:
                 rename_bb(dt_child)
             for var in assignments:
                 stack[var].pop()
+            self._bb_stack.pop()
 
         rename_bb(self._da.dt)
+        # pprint.pprint(self._rename_table)
 
     def _rename_child_phis(self: Self,
                            bb_id: int,
@@ -583,7 +577,9 @@ class SSATransformer:
                     count[var] += 1
                     stack[var].append(var_id)
                     assignments.append(var)
-                    arg.id = self._rename(var, var_id)
+                    arg.id = self._rename_mangle(var, var_id)
+                    self._func_params |= {var}
+                    self._rename_table[arg.id] = var
                 else:
                     raise ValueError("Unrecognized argument type {ty}".format(
                         ty=type(arg).__name__))
@@ -591,15 +587,48 @@ class SSATransformer:
             if len(annotation.keywords) > 0:
                 raise NotImplementedError("No support for keywords")
         elif target.id == '_if':
-            if isinstance(annotation, ast.BoolOp):
-                self._rename_visit_BoolOp(annotation, count, stack)
+            if isinstance(annotation, ast.Name):
+                self._rename_visit_Name(annotation, count, stack)
             elif isinstance(annotation, ast.Call):
                 self._rename_visit_Call(annotation, count, stack)
-            elif isinstance(annotation, ast.Name):
-                self._rename_visit_Name(annotation, count, stack)
+            elif isinstance(annotation, ast.BoolOp):
+                self._rename_visit_BoolOp(annotation, count, stack)
+            elif isinstance(annotation, ast.UnaryOp):
+                self._rename_visit_UnaryOp(annotation, count, stack)
             else:
                 raise ValueError("Unrecognized if condition {ty}".format(
                     ty=type(annotation).__name__))
+            bb_id = self._bb_stack[-1]
+            ref = self._compute_bdd(annotation)
+            self._branch_bdd[bb_id] = ref
+
+            idom = self._da.idoms[bb_id]
+            if len(idom) != 0:
+                idom_bb_id = list(idom)[0]
+                # Which one of the immediate dominator's branch?
+                runner_id = bb_id
+                while idom_bb_id not in self._cfg[runner_id].parents:
+                    for parent_id in self._cfg[runner_id].parents:
+                        if idom_bb_id in self._da.idoms[parent_id]:
+                            runner_id = parent_id
+                            break
+                idom_bb = self._cfg[idom_bb_id]
+                branch_idx = idom_bb.children.index(runner_id)
+                assert branch_idx < 2
+                branch_true = branch_idx == 0
+
+                assert idom_bb_id in self._branch_bdd
+                idom_ref = self._branch_bdd[idom_bb_id]
+                idom_bdd = self._bdd_vars[idom_ref]
+                if not branch_true:
+                    idom_bdd = ~idom_bdd
+                if idom_bb_id in self._branch_idom_bdd:
+                    branch_idom_ref = self._branch_idom_bdd[idom_bb_id]
+                    idom_bdd &= self._bdd_vars[branch_idom_ref]
+                idom_branch_ref = self._allocate_bdd_var()
+                self._bdd_vars[idom_branch_ref] = idom_bdd
+                self._branch_idom_bdd[bb_id] = idom_branch_ref
+
         elif target.id == 'exit':
             pass
         else:
@@ -607,12 +636,76 @@ class SSATransformer:
                 raise ValueError("Unrecognized target name {name}".format(
                     name=target.id))
             # Assign new.
-            var = target.id
-            var_id = count[var]
-            count[var] += 1
-            stack[var].append(var_id)
-            assignments.append(var)
-            target.id = self._rename(var, var_id)
+            phi_var = target.id
+            phi_var_id = count[phi_var]
+            count[phi_var] += 1
+            stack[phi_var].append(phi_var_id)
+            assignments.append(phi_var)
+            target.id = self._rename_mangle(phi_var, phi_var_id)
+            self._rename_table[target.id] = phi_var
+
+            value = annassign.value
+            assert isinstance(value, ast.Tuple)
+            vars = value.elts
+
+            phi_bdds: List[bdd.BinaryDecisionDiagram] = list()
+            bb_id = self._bb_stack[-1]
+            bb = self._cfg[bb_id]
+            for i, var_ast in enumerate(vars):
+                assert isinstance(var_ast, ast.Name)
+                var = var_ast.id
+                ref = self._var_to_bdd_ref.get(var, None)
+                if ref is not None:
+                    phi_bdds.append(self._bdd_vars[ref])
+                else:
+                    parent_bb_id = bb.parents[i]
+
+                    # Get side of branch if possible.
+                    parent_idoms = self._da.idoms[parent_bb_id]
+                    if len(parent_idoms) == 0:
+                        # Must be this pattern:
+                        # a0 = ...
+                        # if ...:
+                        #   a1 = ...
+                        # a2 = phi(a0, a1)
+                        # and we're looking at a0.
+                        idom_bb_id = parent_bb_id
+                        parent_bb = self._cfg[parent_bb_id]
+                        assert len(parent_bb.children) == 2
+                        branch_idx = parent_bb.children.index(bb_id)
+                    else:
+                        idom_bb_id = list(parent_idoms)[0]
+                        runner_id = parent_bb_id
+                        while idom_bb_id not in self._cfg[runner_id].parents:
+                            for parent_id in self._cfg[runner_id].parents:
+                                if idom_bb_id in self._da.idoms[parent_id]:
+                                    runner_id = parent_id
+                                    break
+                        idom_bb = self._cfg[idom_bb_id]
+                        branch_idx = idom_bb.children.index(runner_id)
+                        assert branch_idx < 2
+                    branch_true = branch_idx == 0
+
+                    assert idom_bb_id in self._branch_bdd
+                    idom_ref = self._branch_bdd[idom_bb_id]
+                    idom_bdd = self._bdd_vars[idom_ref]
+                    if self._var_to_constant[var]:
+                        if not branch_true:
+                            idom_bdd = ~idom_bdd
+                        if idom_bb_id in self._branch_idom_bdd:
+                            branch_idom_ref = self._branch_idom_bdd[idom_bb_id]
+                            idom_bdd &= self._bdd_vars[branch_idom_ref]
+                        phi_bdds.append(idom_bdd)
+
+            if len(phi_bdds) == 0:
+                self._var_to_constant[target.id] = False
+            else:
+                phi_bdd = phi_bdds[0]
+                for pbdd in phi_bdds[1:]:
+                    phi_bdd |= pbdd
+                phi_ref = self._allocate_bdd_var()
+                self._var_to_bdd_ref[target.id] = phi_ref
+                self._bdd_vars[phi_ref] = phi_bdd
 
         return assignments
 
@@ -638,6 +731,14 @@ class SSATransformer:
                     self._rename_visit_Call(value, count, stack)
                 elif isinstance(value, ast.BoolOp):
                     self._rename_visit_BoolOp(value, count, stack)
+                elif isinstance(value, ast.UnaryOp):
+                    self._rename_visit_UnaryOp(value, count, stack)
+                elif isinstance(value, ast.Constant):
+                    self._rename_visit_Constant(value, count, stack)
+                else:
+                    raise ValueError(
+                        "Unrecognized assign rhs type {ty}".format(
+                            ty=type(value).__name__))
 
                 # Assign new.
                 var = target.id
@@ -645,7 +746,16 @@ class SSATransformer:
                 count[var] += 1
                 stack[var].append(var_id)
                 assignments.append(var)
-                target.id = self._rename(var, var_id)
+                target.id = self._rename_mangle(var, var_id)
+                self._rename_table[target.id] = var
+                if isinstance(value, ast.Constant):
+                    ref = self._compute_bdd_constant(value)
+                    if ref is not None:
+                        self._var_to_bdd_ref[target.id] = ref
+                    else:
+                        self._var_to_constant[target.id] = value.value
+                else:
+                    self._var_to_bdd_ref[target.id] = self._compute_bdd(value)
             else:
                 raise NotImplementedError(
                     "Unsupported assginment to {ty}".format(
@@ -672,14 +782,25 @@ class SSATransformer:
                              ) -> List[str]:
         value = ret.value
         if isinstance(value, ast.Name):
-            return self._rename_visit_Name(value, count, stack)
+            self._rename_visit_Name(value, count, stack)
         elif isinstance(value, ast.Call):
-            return self._rename_visit_Call(value, count, stack)
+            self._rename_visit_Call(value, count, stack)
         elif isinstance(value, ast.BoolOp):
-            return self._rename_visit_BoolOp(value, count, stack)
+            self._rename_visit_BoolOp(value, count, stack)
+        elif isinstance(value, ast.UnaryOp):
+            self._rename_visit_UnaryOp(value, count, stack)
         else:
             raise ValueError("Unrecognized return type {ty}".format(
                 ty=type(value).__name__))
+
+        print("RETURN")
+        if isinstance(value, ast.Name):
+            var = value.id
+            ref = self._var_to_bdd_ref[var]
+            bdd_var = self._bdd_vars[ref]
+            pprint.pprint(list(bdd_var.satisfy_all()))
+
+        return list()
 
     def _rename_visit_Call(self: Self,
                            call: ast.Call,
@@ -697,6 +818,15 @@ class SSATransformer:
 
         return list()
 
+    def _rename_visit_UnaryOp(self: Self,
+                              unaryop: ast.UnaryOp,
+                              count: Dict[str, int],
+                              stack: Dict[str, List[int]]
+                              ) -> List[str]:
+        print(ast.dump(unaryop))
+        raise
+        return list()
+
     def _rename_visit_BoolOp(self: Self,
                              boolop: ast.BoolOp,
                              count: Dict[str, int],
@@ -707,6 +837,8 @@ class SSATransformer:
                 self._rename_visit_Name(value, count, stack)
             elif isinstance(value, ast.Call):
                 self._rename_visit_Call(value, count, stack)
+            elif isinstance(value, ast.UnaryOp):
+                self._rename_visit_UnaryOp(value, count, stack)
             else:
                 raise ValueError("Unsupported value type {ty}".format(
                     ty=type(value).__name__))
@@ -721,11 +853,103 @@ class SSATransformer:
         if len(stack[var]) == 0:
             raise UnboundLocalError(f"{var} not defined")
         var_id = stack[var][-1]
-        name.id = self._rename(var, var_id)
+        name.id = self._rename_mangle(var, var_id)
         return list()
 
-    def _rename(self: Self, var: str, id: int) -> str:
+    def _rename_visit_Constant(self: Self,
+                               constant: ast.Constant,
+                               count: Dict[str, int],
+                               stack: Dict[str, List[int]]
+                               ) -> List[str]:
+        return list()
+
+    def _rename_mangle(self: Self, var: str, id: int) -> str:
         return f'*{id}*{var}*'
+
+    def _compute_bdd(self: Self, expr: ast.expr) -> str:
+        if isinstance(expr, ast.Call):
+            caller = _get_reference(expr.func, self._locals)
+            if caller is Flip:
+                var_ref, _ = self._new_bdd_var()
+                return var_ref
+        elif isinstance(expr, ast.Name):
+            # Should be initialized in self._bdd_vars at assignment.
+            return self._var_to_bdd_ref[expr.id]
+        elif isinstance(expr, ast.BoolOp):
+            var_refs = [self._compute_bdd(val) for val in expr.values]
+            bdd_vars = [self._bdd_vars[ref] for ref in var_refs]
+            if isinstance(expr.op, ast.And):
+                bool_bdd_var = bdd_vars[0]
+                for bdd_var in bdd_vars[1:]:
+                    bool_bdd_var &= bdd_var
+            elif isinstance(expr.op, ast.Or):
+                bool_bdd_var = bdd_vars[0]
+                for bdd_var in bdd_vars[1:]:
+                    bool_bdd_var |= bdd_var
+            else:
+                raise Exception
+            bool_bdd_ref = self._allocate_bdd_var()
+            self._bdd_vars[bool_bdd_ref] = bool_bdd_var
+            return bool_bdd_ref
+        elif isinstance(expr, ast.UnaryOp):
+            if isinstance(expr.op, ast.Not):
+                var_ref = self._compute_bdd(expr.operand)
+                not_bdd_var = ~self._bdd_vars[var_ref]
+                not_bdd_ref = self._allocate_bdd_var()
+                self._bdd_vars[not_bdd_ref] = not_bdd_var
+                return not_bdd_ref
+            else:
+                raise Exception
+        raise Exception
+
+    def _compute_bdd_constant(self: Self, constant: ast.Constant
+                              ) -> Optional[str]:
+        if isinstance(constant.value, bool):
+            bb_id = self._bb_stack[-1]
+            idom = self._da.idoms[bb_id]
+            if len(idom) != 0:
+                idom_bb_id = list(idom)[0]
+                # Which one of the immediate dominator's branch?
+                runner_id = bb_id
+                while idom_bb_id not in self._cfg[runner_id].parents:
+                    for parent_id in self._cfg[runner_id].parents:
+                        if idom_bb_id in self._da.idoms[parent_id]:
+                            runner_id = parent_id
+                            break
+                idom_bb = self._cfg[idom_bb_id]
+                branch_idx = idom_bb.children.index(runner_id)
+                assert branch_idx < 2
+                branch_true = branch_idx == 0
+
+                assert idom_bb_id in self._branch_bdd
+                idom_ref = self._branch_bdd[idom_bb_id]
+                idom_bdd = self._bdd_vars[idom_ref]
+
+                # Only care about values that are true.
+                if constant.value:
+                    if not branch_true:
+                        idom_bdd = ~idom_bdd
+                    if idom_bb_id in self._branch_idom_bdd:
+                        branch_idom_ref = self._branch_idom_bdd[idom_bb_id]
+                        idom_bdd &= self._bdd_vars[branch_idom_ref]
+
+                    constant_ref = self._allocate_bdd_var()
+                    self._bdd_vars[constant_ref] = idom_bdd
+                    return constant_ref
+        else:
+            raise ValueError("Unsupported constant of type {ty}".format(
+                ty=type(constant.value).__name__))
+
+    def _allocate_bdd_var(self: Self) -> str:
+        id = self._num_bdd_vars
+        self._num_bdd_vars += 1
+        return f'bddvar_{id}'
+
+    def _new_bdd_var(self: Self) -> Tuple[str, bdd.BinaryDecisionDiagram]:
+        ref = self._allocate_bdd_var()
+        bdd_var = bdd.bddvar(ref)
+        self._bdd_vars[ref] = bdd_var
+        return ref, self._bdd_vars[ref]
 
 
 def compile(*, return_types: Type[ProbVar]):
@@ -757,14 +981,14 @@ def compile(*, return_types: Type[ProbVar]):
         exec(cc, globs, locs)
         transformed_func = locs[func.__name__]
 
-        # Exact Inference stuff
+        # Exact inference.
         cfg = pycfg.gen_cfg(func_src)
         sources = [k for k, v in cfg.items() if len(v.parents) == 0]
         if len(sources) > 1:
             raise RuntimeError("PyPPL does not support nested functions")
 
         cfg = bblockify(cfg)
-        SSATransformer(cfg)
+        SSATransformer(cfg, caller_frame.f_locals)
 
         def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:
             # Sample logic goes here.
