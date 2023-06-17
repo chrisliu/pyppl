@@ -1,44 +1,82 @@
+from collections.abc import Callable
 import pyppl
+
+
+def print_probability(func: Callable, *args, **kwargs) -> None:
+    print("Running...")
+    try:
+        with pyppl.RejectionSampling():
+            success = func(*args, **kwargs)
+        print(success)
+    except Exception as e:
+        print("Approximate inference error")
+        print(e)
+
+    try:
+        with pyppl.ExactInference():
+            success = func(*args, **kwargs)
+        print(success)
+    except Exception as e:
+        print("Exact inference error")
+        print(e)
+
 
 if __name__ == '__main__':
     @pyppl.compile(return_types=pyppl.Flip)
-    def test_flip(prob1, prob2):
-        f = pyppl.Flip(prob1)
-        a = False
-        if f:
+    def simple_flip():
+        if pyppl.Flip():
+            a = True
+        else:
             a = False
-
-        # f = pyppl.Flip(prob1)
-        # b = True
-        # if not f:
-        #     if pyppl.Flip():
-        #         b = True
-        #     else:
-        #         b = False
-        #     a = False
-        # else:
-        #     a = True
-        # a = b
-
-        # pyppl.observe(bool(f))
-        # b = True
-        # if f and not pyppl.Flip(prob2):
-        #     if pyppl.Flip():
-        #         b = False
-        #         c = True
-        #     else:
-        #         b = True
-        #         c = False
-        #     a = c
-        # else:
-        #     a = False
-        # a = b
         return a
+    print_probability(simple_flip)
 
-    with pyppl.RejectionSampling():
-        success = test_flip(0.5, 0.5)
+    @pyppl.compile(return_types=pyppl.Flip)
+    def less_simple_flip(prob):
+        if pyppl.Flip(prob):
+            a = True
+        else:
+            a = False
+        return a
+    print_probability(less_simple_flip, 0.35)
 
-    print(success)
+    @pyppl.compile(return_types=pyppl.Flip)
+    def nasty_control(prob):
+        f = pyppl.Flip(prob)
+        if f:
+            c = True
+            return c
+        else:
+            a = False
+        return a
+    print_probability(nasty_control, 0.2)
+
+    @pyppl.compile(return_types=pyppl.Flip)
+    def confusing_control(prob1, prob2):
+        f = pyppl.Flip(prob1)
+        b = True
+        if not f:
+            if pyppl.Flip(prob2):
+                b = True
+            else:
+                b = False
+            a = False
+        else:
+            a = True
+        a = b
+        return a
+    print_probability(confusing_control, 0.5, 0.5)
+
+    @pyppl.compile(return_types=pyppl.Flip)
+    def up_to_n_heads_in_a_row(n):
+        heads = True
+        for _ in range(int(pyppl.Integer(pyppl.UniformDistribution(0, n)))):
+            heads &= pyppl.Flip()
+        return heads
+    print_probability(up_to_n_heads_in_a_row, 5)
+
+    # with pyppl.RejectionSampling():
+    #     success = up_to_n_heads_in_a_row(3)
 
     # @pyppl.compile(return_types=pyppl.Flip)
     # def test_flip():

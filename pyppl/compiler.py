@@ -149,6 +149,12 @@ def bblockify(cfg: Dict[int, pycfg.CFGNode]) -> Dict[int, BasicBlock]:
 
     # Merge statements into basic blocks.
     for stmt_id, stmt_node in cfg.items():
+        stmt_ast = stmt_node.ast_node
+        if (isinstance(stmt_ast, ast.AnnAssign) and
+            isinstance(stmt_ast.target, ast.Name) and
+                stmt_ast.target.id == 'exit'):
+            continue
+
         parent_bb_id, parent_bb = get_bb_from_stmt(stmt_id)
 
         # If the parent has one child and that child only has one parent,
@@ -169,10 +175,12 @@ def bblockify(cfg: Dict[int, pycfg.CFGNode]) -> Dict[int, BasicBlock]:
         # Update entry and exit points.
         entry_stmt = bb[0]
         bb.parents = [node_remap[parent_stmt.rid]
-                      for parent_stmt in entry_stmt.parents]
+                      for parent_stmt in entry_stmt.parents
+                      if parent_stmt.rid in node_remap]
         exit_stmt = bb[-1]
         bb.children = [node_remap[child_stmt.rid]
-                       for child_stmt in exit_stmt.children]
+                       for child_stmt in exit_stmt.children
+                       if child_stmt.rid in node_remap]
 
         # Remove all parents and children for basic block statements.
         for stmt in bb:
@@ -337,6 +345,16 @@ class DominanceAnalysis:
         return self.dominator_tree
 
 
+class SSANameReverseTransform(ast.NodeTransformer):
+    def __init__(self: Self, rename_table: Dict[str, str]) -> None:
+        self._rename_table: Dict[str, str] = rename_table
+
+    def visit_Name(self: Self, name: ast.Name) -> ast.Name:
+        if name.id in self._rename_table:
+            name.id = self._rename_table[name.id]
+        return name
+
+
 class SSATransformer:
     def __init__(self: Self, cfg: Dict[int, BasicBlock], locals) -> None:
         self._da = DominanceAnalysis(cfg)
@@ -473,8 +491,6 @@ class SSATransformer:
                                 worklist.append(bb_id)
                         update_assigns(self._da.dt)
 
-        pprint.pprint(self._cfg)
-
     def _rename_variables(self: Self) -> None:
         count: Dict[str, int] = defaultdict(int)
         stack: Dict[str, List[int]] = defaultdict(list)
@@ -488,6 +504,7 @@ class SSATransformer:
         self._func_params: Set[str] = set()
         self._rename_table: Dict[str, str] = dict()
         self._bb_stack: List[int] = list()
+        self.sat_refs: Dict[str, ast.AST] = dict()
 
         def rename_bb(dt_node: DominanceAnalysis.DominatorTree) -> None:
             bb = self._cfg[dt_node.bb_id]
@@ -504,9 +521,6 @@ class SSATransformer:
                 assigns = visit(ast_node, count, stack)
                 assignments += assigns
 
-            print("BB", dt_node.bb_id)
-            print(bb)
-
             self._rename_child_phis(dt_node.bb_id, bb, count, stack)
             for dt_child in dt_node.children:
                 rename_bb(dt_child)
@@ -515,7 +529,21 @@ class SSATransformer:
             self._bb_stack.pop()
 
         rename_bb(self._da.dt)
-        # pprint.pprint(self._rename_table)
+
+        self.sat_cond: Union[List[Dict[str, int]], bool] = False
+        if 'return' in self._bdd_vars:
+            conds = list(self._bdd_vars['return'].satisfy_all())
+            if len(conds) == 0:
+                self.sat_cond = False
+            elif len(conds) == 1 and len(conds[0]) == 0:
+                self.sat_cond = True  # Vacuously true
+            else:
+                self.sat_cond = conds
+
+        # Fix SSA renaming on for sat_refs
+        renamer = SSANameReverseTransform(self._rename_table)
+        self.sat_refs = {var: renamer.visit(var_ast)
+                         for var, var_ast in self.sat_refs.items()}
 
     def _rename_child_phis(self: Self,
                            bb_id: int,
@@ -635,14 +663,6 @@ class SSATransformer:
             if not isinstance(annotation, ast.Name) or annotation.id != 'phi':
                 raise ValueError("Unrecognized target name {name}".format(
                     name=target.id))
-            # Assign new.
-            phi_var = target.id
-            phi_var_id = count[phi_var]
-            count[phi_var] += 1
-            stack[phi_var].append(phi_var_id)
-            assignments.append(phi_var)
-            target.id = self._rename_mangle(phi_var, phi_var_id)
-            self._rename_table[target.id] = phi_var
 
             value = annassign.value
             assert isinstance(value, ast.Tuple)
@@ -696,6 +716,15 @@ class SSATransformer:
                             branch_idom_ref = self._branch_idom_bdd[idom_bb_id]
                             idom_bdd &= self._bdd_vars[branch_idom_ref]
                         phi_bdds.append(idom_bdd)
+
+            # Assign new.
+            phi_var = target.id
+            phi_var_id = count[phi_var]
+            count[phi_var] += 1
+            stack[phi_var].append(phi_var_id)
+            assignments.append(phi_var)
+            target.id = self._rename_mangle(phi_var, phi_var_id)
+            self._rename_table[target.id] = phi_var
 
             if len(phi_bdds) == 0:
                 self._var_to_constant[target.id] = False
@@ -793,14 +822,16 @@ class SSATransformer:
             raise ValueError("Unrecognized return type {ty}".format(
                 ty=type(value).__name__))
 
-        print("RETURN")
         if isinstance(value, ast.Name):
             var = value.id
             # Only if it's possible to return true.
             if var in self._var_to_bdd_ref:
                 ref = self._var_to_bdd_ref[var]
                 bdd_var = self._bdd_vars[ref]
-                pprint.pprint(list(bdd_var.satisfy_all()))
+                if 'return' not in self._bdd_vars:
+                    self._bdd_vars['return'] = bdd_var
+                else:
+                    self._bdd_vars['return'] |= bdd_var
 
         return list()
 
@@ -883,9 +914,13 @@ class SSATransformer:
     def _compute_bdd(self: Self, expr: ast.expr) -> str:
         if isinstance(expr, ast.Call):
             caller = _get_reference(expr.func, self._locals)
+            # Only atoms are pyppl.Flip
             if caller is Flip:
                 var_ref, _ = self._new_bdd_var()
+                self.sat_refs[var_ref] = expr
                 return var_ref
+            else:
+                raise ValueError(f"Cannot support calls to {caller}")
         elif isinstance(expr, ast.Name):
             # Should be initialized in self._bdd_vars at assignment.
             return self._var_to_bdd_ref[expr.id]
@@ -966,6 +1001,22 @@ class SSATransformer:
         return ref, self._bdd_vars[ref]
 
 
+def _get_exact_inference_atoms(func_src: str, prob_vars: List[ast.AST]
+                               ) -> ast.AST:
+    func_ast = ast.parse(func_src)
+    assert isinstance(func_ast, ast.Module)
+    for expr_ast in func_ast.body:
+        if isinstance(expr_ast, ast.FunctionDef):
+            expr_ast.decorator_list = list()  # Hack: remove all decorators.
+            expr_ast.body = [
+                ast.Return(
+                    value=ast.List(
+                        elts=prob_vars,
+                        ctx=ast.Load()))
+            ]
+    return func_ast
+
+
 def compile(*, return_types: Type[ProbVar]):
     def compile_impl(func):
         func_src = inspect.getsource(func)
@@ -996,13 +1047,26 @@ def compile(*, return_types: Type[ProbVar]):
         transformed_func = locs[func.__name__]
 
         # Exact inference.
-        cfg = pycfg.gen_cfg(func_src)
-        sources = [k for k, v in cfg.items() if len(v.parents) == 0]
-        if len(sources) > 1:
-            raise RuntimeError("PyPPL does not support nested functions")
+        exact_error: Optional[Exception] = None
+        try:
+            cfg = pycfg.gen_cfg(func_src)
+            sources = [k for k, v in cfg.items() if len(v.parents) == 0]
+            if len(sources) > 1:
+                raise RuntimeError("PyPPL does not support nested functions")
 
-        cfg = bblockify(cfg)
-        SSATransformer(cfg, caller_frame.f_locals)
+            cfg = bblockify(cfg)
+            ssa_transform = SSATransformer(cfg, caller_frame.f_locals)
+            prob_var_ast = _get_exact_inference_atoms(
+                func_src, list(ssa_transform.sat_refs.values()))
+            prob_var_ast = ast.fix_missing_locations(prob_var_ast)
+            exact_cc = __builtin_compile(
+                prob_var_ast, filename='<ast>', mode='exec')
+            exact_globs = caller_frame.f_globals
+            exact_locs = caller_frame.f_locals
+            exec(exact_cc, exact_globs, exact_locs)
+            get_prob_vars = exact_locs[func.__name__]
+        except Exception as e:
+            exact_error = e
 
         def contextual_execution(*args: Any, **kwargs: Any) -> ProbVar:
             # Sample logic goes here.
@@ -1016,7 +1080,12 @@ def compile(*, return_types: Type[ProbVar]):
                 return inference.sample(transformed_func, return_types,
                                         *args, **kwargs)
             elif isinstance(inference, ExactInference):
-                raise NotImplementedError("ExactInference is unsupported.")
+                if exact_error is not None:
+                    raise exact_error
+                return inference.infer(ssa_transform.sat_cond,
+                                       list(ssa_transform.sat_refs.keys()),
+                                       get_prob_vars,
+                                       *args, **kwargs)
             else:
                 raise RuntimeError(
                     f"Unsupported inference type {type(inference)}")
